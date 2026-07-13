@@ -158,20 +158,25 @@ A pack = entity/component schemas + action manifest + intent-validation rules + 
 
 Deterministic kernel + one village scenario, ~50 agents, utility-AI SOUL stub, one shared TEXT model with latent dialogue, hot/cold LOD, fast-forward. **No trained models in v0** — it proves the intent/observation contracts and the latent-dialogue bet; the tiny net then drops into a working socket.
 
-## Implementation status (v0)
+## Implementation status (v0 and v0.5)
 
-**Verified 2026-07-13.** The vertical slice shipped with a deterministic integer kernel, one village scenario and ~50-agent utility-AI SOUL loop, persona and memory state, shared Qwen3-0.6B Q4_0 TEXT rendering, latent dialogue, live hot/warm/cold LOD, analytic AFK fast-forward with a returning-player digest, replay, and a Ratatui viewer with a headless smoke path. No trained SOUL model is included in v0; the utility policy occupies the production `SoulPolicy` socket.
+**Verified 2026-07-13.** The vertical slice shipped with a deterministic integer kernel, one village scenario and ~50-agent utility-AI SOUL loop, persona and memory state, shared Qwen3-0.6B Q4_0 TEXT rendering, latent dialogue, live hot/warm/cold LOD, analytic AFK fast-forward with a returning-player digest, replay, and a Ratatui viewer with a headless smoke path. POST-REVIEW v0.5 adds feeding calibration, directional opinions, asynchronous TUI rendering, stale-server reaping, pack-derived fast-forward constants, and a deterministic per-character habit cache. No trained SOUL model is included; the utility policy occupies the production `SoulPolicy` socket.
 
 Measured gates:
 
 | Area | Result |
 | --- | --- |
-| Determinism/replay | Same seed, 10,000 ticks: identical hash. Replay from `(seed, intent log)`, including `FfSegment` entries, reproduces the full state hash including pack state. |
-| Live village | 50 agents at 12,893 ticks/s in release on an M4 Pro; maximum action-histogram share 37.9%. |
-| Analytic FF | 604,800 ticks (one in-game week) in 0.014 s (~43M ticks/s); drift versus the hot reference ≤4% (15% bound); digest deterministic. |
-| TEXT | Qwen3-0.6B Q4_0, 359 MiB via llama.cpp; warm render 79 ms; KV slot reuse reduces prompt tokens 104 → 1. M4 Pro Metal pp512 2691 t/s / tg128 193 t/s; CPU-only pp512 388 / tg128 76. |
+| Determinism/replay | Same seed, 10,000 ticks: identical hash. Replay from `(seed, intent log)`, including `FfSegment` entries, reproduces the full state hash including pack state. Habit-enabled runs are deterministic; habit policy state is intentionally outside kernel hash state. |
+| Live village | 50 agents at 12,893 ticks/s in release on an M4 Pro; maximum action-histogram share 37.9% in the v0 measurement. |
+| POST-REVIEW health | 0 starvation deaths across 50 seeds × 10,000 ticks (earlier v0 emergent result: 8/50); eat share 2.4–2.9%. |
+| Habit cache | Honest hit rate 51.7% in the 50×10k soak and 50.7% in the 86,400-tick demo; 2,151 ticks/s habits-on versus 1,088 ticks/s off at 50×10k; deaths 0, deterministic hashes, and per-character divergence gate green. Speak/Give passthrough, urgency invalidation, and bounded TTLs preserve social behavior. |
+| Analytic FF | 604,800 ticks in 0.014 s (~43M ticks/s); drift versus the hot reference ≤4% under the 15% bound; digest deterministic. Analytic gains are read from village pack constants, with no duplicate calibration constants. |
+| Opinions, viewer, and server lifecycle | Opinion deltas are asymmetric and directional; live TEXT rendering is asynchronous; stale `llama-server` processes are reaped on startup. PID-reuse handling is narrowed but its TOCTOU is not atomic. |
+| TEXT | Qwen3-0.6B Q4_0, 359 MiB via llama.cpp; warm render 79 ms; KV-slot reuse reduces prompt tokens 104 → 1. M4 Pro Metal pp512 2691 t/s / tg128 193 t/s; CPU-only pp512 388 / tg128 76. |
 | Latent dialogue | Unobserved conversations make 0 `TextBackend` calls while relationship deltas apply; retroactive backfill is act-coherent and cached; text is one-way and never mutates sim state. |
-| Gates/viewer | 49 unit/integration tests + 4 live-model tests green; clippy `-D warnings` clean; `scripts/demo.sh` exits 0; Ratatui TUI verified in a real PTY and `view --smoke` exits 0 headless. |
+| Gates/viewer | 58 tests green after the v0.5 review; `clippy -D warnings`, formatting, and `scripts/demo.sh` are clean; Ratatui TUI was verified in a real PTY and `view --smoke` exits 0 headless. |
+
+The earlier 82.7% habit hit rate was pre-fix telemetry: cache accounting counted behavior that could suppress social scoring, and the first implementation allowed social lockout. The review made the telemetry truthful and always re-scored Speak/Give; 51.7% (soak) and 50.7% (demo) are the honest measurements.
 
 ### Ratified v0 contract changes
 
@@ -180,6 +185,14 @@ Measured gates:
 - **Fast-forward is logged.** Cold analytic spans are `FfSegment` entries in the intent log; replay consumes those entries and applies the pack's analytic advance, so the log covers AFK time.
 - **Live LOD is a kernel gate.** The Director's hot/warm/cold decisions are enforced through `World::step_gated`, not by mutating world state outside the normal tick pipeline.
 - **Observation has two ratified layers.** `AgentObs` in `mw-agents` is the rich, SOUL-facing schema. Kernel `Observation` is the minimal seam and the single scan used to feed `ScenarioPack::afforded_tools`.
+
+### Ratified v0.5 contract changes (2026-07-13)
+
+- **Habit cache semantics are predicate-gated and per-character.** A cache key combines quantized needs, location, tool mask, and goal; validity predicates are checked every tick, with urgency/event invalidation and bounded TTLs. Cache state is deterministic and supports character-level divergence.
+- **Social acts always pass through the scorer.** Speak and Give are never allowed to become cached social lockout; their mechanical outcomes remain applied by the kernel/event path.
+- **Habits are policy plasticity, not kernel truth.** Habit-cache state is intentionally outside `world.state_hash`. Replay and canonical hashes cover world/pack state and validated intents; cache contents can evolve as policy state without changing the kernel truth contract.
+- **Single source of truth for fast-forward constants.** Analytic gains are derived from the installed village pack constants; the drift gate remains ≤15% (measured ≤4%).
+- **Post-review health and lifecycle fixes are ratified.** Directional opinion deltas, asynchronous TUI rendering, stale-server reaping, and the narrowed (non-atomic) PID-reuse TOCTOU behavior are part of the v0.5 implementation status.
 
 ## Open questions
 
