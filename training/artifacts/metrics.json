@@ -1,0 +1,243 @@
+{
+  "params": 1219604,
+  "device": "mps",
+  "train_match_rate": 0.919916881307946,
+  "heldout_match_rate": 0.9298714019937623,
+  "heldout_match_at_1": 0.9298714019937623,
+  "confident_subset_match": 0.9457156582640136,
+  "confident_subset_count": 276857,
+  "tie_fraction": 0.05836397215127016,
+  "tie_count": 17160,
+  "no_second_candidate_count": 0,
+  "train_loss": 0.2663176101808167,
+  "heldout_loss": 0.27147754522938855,
+  "train_count": 1056802,
+  "heldout_count": 294017,
+  "per_tool_confusion": {
+    "move": {
+      "move": 25654,
+      "eat": 4,
+      "sleep": 7,
+      "work": 1197,
+      "speak": 5210,
+      "give": 0,
+      "pickup": 0,
+      "drop": 0,
+      "use": 0,
+      "follow": 0,
+      "flee": 0,
+      "idle": 2903
+    },
+    "eat": {
+      "move": 56,
+      "eat": 4993,
+      "sleep": 24,
+      "work": 194,
+      "speak": 1716,
+      "give": 0,
+      "pickup": 0,
+      "drop": 0,
+      "use": 0,
+      "follow": 0,
+      "flee": 0,
+      "idle": 277
+    },
+    "sleep": {
+      "move": 0,
+      "eat": 1,
+      "sleep": 5592,
+      "work": 0,
+      "speak": 591,
+      "give": 0,
+      "pickup": 0,
+      "drop": 0,
+      "use": 0,
+      "follow": 0,
+      "flee": 0,
+      "idle": 237
+    },
+    "work": {
+      "move": 54,
+      "eat": 13,
+      "sleep": 0,
+      "work": 11639,
+      "speak": 241,
+      "give": 0,
+      "pickup": 0,
+      "drop": 0,
+      "use": 0,
+      "follow": 0,
+      "flee": 0,
+      "idle": 17
+    },
+    "speak": {
+      "move": 291,
+      "eat": 68,
+      "sleep": 209,
+      "work": 435,
+      "speak": 179955,
+      "give": 0,
+      "pickup": 0,
+      "drop": 0,
+      "use": 0,
+      "follow": 0,
+      "flee": 0,
+      "idle": 4915
+    },
+    "give": {
+      "move": 0,
+      "eat": 0,
+      "sleep": 0,
+      "work": 0,
+      "speak": 0,
+      "give": 0,
+      "pickup": 0,
+      "drop": 0,
+      "use": 0,
+      "follow": 0,
+      "flee": 0,
+      "idle": 0
+    },
+    "pickup": {
+      "move": 0,
+      "eat": 0,
+      "sleep": 0,
+      "work": 0,
+      "speak": 0,
+      "give": 0,
+      "pickup": 0,
+      "drop": 0,
+      "use": 0,
+      "follow": 0,
+      "flee": 0,
+      "idle": 0
+    },
+    "drop": {
+      "move": 0,
+      "eat": 0,
+      "sleep": 0,
+      "work": 0,
+      "speak": 0,
+      "give": 0,
+      "pickup": 0,
+      "drop": 0,
+      "use": 0,
+      "follow": 0,
+      "flee": 0,
+      "idle": 0
+    },
+    "use": {
+      "move": 0,
+      "eat": 0,
+      "sleep": 0,
+      "work": 0,
+      "speak": 0,
+      "give": 0,
+      "pickup": 0,
+      "drop": 0,
+      "use": 0,
+      "follow": 0,
+      "flee": 0,
+      "idle": 0
+    },
+    "follow": {
+      "move": 35,
+      "eat": 0,
+      "sleep": 0,
+      "work": 0,
+      "speak": 52,
+      "give": 0,
+      "pickup": 0,
+      "drop": 0,
+      "use": 0,
+      "follow": 0,
+      "flee": 0,
+      "idle": 0
+    },
+    "flee": {
+      "move": 0,
+      "eat": 0,
+      "sleep": 0,
+      "work": 0,
+      "speak": 0,
+      "give": 0,
+      "pickup": 0,
+      "drop": 0,
+      "use": 0,
+      "follow": 0,
+      "flee": 0,
+      "idle": 0
+    },
+    "idle": {
+      "move": 19,
+      "eat": 138,
+      "sleep": 3,
+      "work": 0,
+      "speak": 1712,
+      "give": 0,
+      "pickup": 0,
+      "drop": 0,
+      "use": 0,
+      "follow": 0,
+      "flee": 0,
+      "idle": 45565
+    }
+  },
+  "history": [
+    {
+      "epoch": 1,
+      "train_loss": 0.28329044264789077,
+      "train_match": 0.919916881307946,
+      "heldout_loss": 0.27147754522938855,
+      "heldout_match": 0.9298714019937623
+    },
+    {
+      "epoch": 2,
+      "train_loss": 0.15188058386409606,
+      "train_match": 0.9013031769432684,
+      "heldout_loss": 0.3852348808180504,
+      "heldout_match": 0.8911525524034325
+    },
+    {
+      "epoch": 3,
+      "train_loss": 0.12669702415877349,
+      "train_match": 0.933852320491445,
+      "heldout_loss": 0.25016861892359726,
+      "heldout_match": 0.9254226796409731
+    },
+    {
+      "epoch": 4,
+      "train_loss": 0.10591668453684772,
+      "train_match": 0.9460476039977215,
+      "heldout_loss": 0.19844535862213927,
+      "heldout_match": 0.928381692215076
+    },
+    {
+      "epoch": 5,
+      "train_loss": 0.09121863656092638,
+      "train_match": 0.8893558112115609,
+      "heldout_loss": 0.697326357687466,
+      "heldout_match": 0.8559777155742695
+    }
+  ],
+  "config": {
+    "seed": 20260713,
+    "epochs": 15,
+    "batch_size": 4096,
+    "learning_rate": 0.002,
+    "weight_decay": 0.0001,
+    "patience": 4,
+    "hidden_dim": 1024,
+    "num_workers": 0
+  },
+  "train_seeds": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "heldout_seeds": [
+    5
+  ],
+  "opset": 17
+}

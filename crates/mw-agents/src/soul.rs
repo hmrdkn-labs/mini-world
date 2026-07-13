@@ -2,13 +2,12 @@
 //! sitting behind the same [`SoulPolicy`] socket a distilled net drops into
 //! later.
 //!
-//! It is scenario-agnostic: it scores the currently-afforded tools of an
 //! [`AgentObs`] using the character's [`Persona`] and its memory-derived
 //! opinions, and defers the three pack-specific facts it cannot know — a
 //! character's needs, a neighbor's faction, and how a chosen tool becomes a
-//! kernel `Intent` — to a [`Body`]. Every number is integer/fixed-point and the
-//! only randomness is a small tie-break draw from the agent's own kernel RNG
-//! stream, so decisions replay bit-identically.
+//! kernel `Intent` — to a [`Body`]. Every number is integer/fixed-point and
+//! decisions are deterministic: equal scores resolve to the lowest tool id,
+//! so decisions replay bit-identically.
 
 use mw_core::{AgentRng, EntityId, Event, Intent, Observation, SoulPolicy};
 
@@ -43,8 +42,6 @@ const BIAS_WEIGHT: i32 = 220;
 const GIVE_COST: i32 = 200;
 /// Foresight divisor: an industrious agent works now against future hunger.
 const WORK_FORESIGHT: i32 = 3;
-/// Tie-break jitter drawn from the agent RNG stream (exclusive upper bound).
-const NOISE: u32 = 24;
 
 /// How a tool touches neighbor opinion.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -89,15 +86,17 @@ pub struct Choice {
     pub goal: u8,
 }
 
-/// The scenario side of the socket: everything the generic scorer needs that
-/// only the installed pack knows.
 pub trait Body {
     /// Self needs/stats for `entity` at `tick`, fixed-point in `[0, NEED_ONE]`.
     fn self_stats(&self, entity: EntityId, tick: u64) -> [i16; N_STATS];
     /// Faction bucket of an observed entity (a cheap label).
     fn faction(&self, entity: EntityId) -> u8;
-    /// Realize a chosen tool into a kernel intent, applying whatever routing and
-    /// verb encoding the pack needs.
+    /// Scenario-defined cell/tile class at a world position.
+    fn cell_class(&self, _pos: (i32, i32)) -> u8 {
+        0
+    }
+    /// Realize a chosen tool into a kernel intent, applying whatever routing
+    /// and verb encoding the pack needs.
     fn to_intent(
         &self,
         entity: EntityId,
@@ -137,12 +136,15 @@ pub struct UtilitySoul<B: Body> {
     cursor: usize,
 }
 
-/// A policy decision and the exact rich observation consumed by the scorer.
 #[derive(Clone, Debug)]
 pub struct DecisionTrace {
     pub obs: AgentObs,
     pub choice: Choice,
     pub intent: Intent,
+    /// Difference between the best and second-best afforded-tool scores.
+    /// `i32::MAX` means no second scorer score was available (for example,
+    /// a single-tool decision or a habit replay).
+    pub score_margin: i32,
     pub replay: bool,
 }
 
@@ -209,6 +211,7 @@ impl<B: Body> UtilitySoul<B> {
             obs: agent_obs,
             choice,
             intent: intent.clone(),
+            score_margin: i32::MAX,
             replay: true,
         });
     }
@@ -323,18 +326,22 @@ impl<B: Body> UtilitySoul<B> {
                 kind: 0,
                 id: Some(nid),
                 pos,
+                rel_pos: (pos.0 - self_pos.0, pos.1 - self_pos.1),
+                cell_class: self.body.cell_class(pos),
             });
         }
         Some(obs::encode(
             obs.tick,
             self_stats,
+            self_pos,
+            self.body.cell_class(self_pos),
             cands,
             event_counts(mem),
             obs.tool_mask,
         ))
     }
 
-    fn score(&self, obs: &AgentObs, p: &Persona, rng: &mut AgentRng) -> Choice {
+    fn score(&self, obs: &AgentObs, p: &Persona) -> (Choice, i32) {
         let deficits = [
             (NEED_ONE - obs.self_stats[0]).max(0) as i32,
             (NEED_ONE - obs.self_stats[1]).max(0) as i32,
@@ -373,6 +380,7 @@ impl<B: Body> UtilitySoul<B> {
         }
 
         let mut best = i32::MIN;
+        let mut second = i32::MIN;
         let mut choice = Choice {
             tool: obs.tool_mask.trailing_zeros(), // a guaranteed-afforded fallback
             target: None,
@@ -432,8 +440,8 @@ impl<B: Body> UtilitySoul<B> {
                 Social::None => {}
             }
 
-            s += rng.range_u32(NOISE) as i32;
             if s > best {
+                second = best;
                 best = s;
                 choice = Choice {
                     tool,
@@ -441,14 +449,21 @@ impl<B: Body> UtilitySoul<B> {
                     target_pos,
                     goal: obs.goal,
                 };
+            } else if s > second {
+                second = s;
             }
         }
-        choice
+        let margin = if second == i32::MIN {
+            i32::MAX
+        } else {
+            best - second
+        };
+        (choice, margin)
     }
 }
 
 impl<B: Body> SoulPolicy for UtilitySoul<B> {
-    fn decide(&mut self, obs: &Observation, rng: &mut AgentRng) -> Intent {
+    fn decide(&mut self, obs: &Observation, _rng: &mut AgentRng) -> Intent {
         // Resolve which entity is deciding from the stable per-tick call order.
         if self.last_tick != Some(obs.tick) {
             self.last_tick = Some(obs.tick);
@@ -472,6 +487,7 @@ impl<B: Body> SoulPolicy for UtilitySoul<B> {
                             goal: agent_obs.goal,
                         },
                         intent: Intent::Idle,
+                        score_margin: i32::MAX,
                         replay: false,
                     });
                 }
@@ -482,7 +498,7 @@ impl<B: Body> SoulPolicy for UtilitySoul<B> {
         let agent_obs = self
             .encode_observation(obs, slot)
             .expect("cursor slot must match utility state");
-        let choice = self.score(&agent_obs, &persona, rng);
+        let (choice, score_margin) = self.score(&agent_obs, &persona);
         self.last_tool = Some(choice.tool);
         self.hist[choice.tool as usize] += 1;
         let intent = self.body.to_intent(entity, obs.tick, self_pos, &choice);
@@ -491,6 +507,7 @@ impl<B: Body> SoulPolicy for UtilitySoul<B> {
                 obs: agent_obs,
                 choice,
                 intent: intent.clone(),
+                score_margin,
                 replay: false,
             });
         }

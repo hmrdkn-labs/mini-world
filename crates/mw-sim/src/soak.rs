@@ -130,6 +130,15 @@ impl Body for VillageBody {
         [h as i16, en as i16, so as i16]
     }
 
+    fn cell_class(&self, pos: (i32, i32)) -> u8 {
+        match tile_at(pos) {
+            Tile::Empty => 0,
+            Tile::Home => 1,
+            Tile::Bakery => 2,
+            Tile::Well => 3,
+            Tile::Field => 4,
+        }
+    }
     fn faction(&self, entity: EntityId) -> u8 {
         self.factions
             .get(entity.index() as usize)

@@ -34,7 +34,8 @@ pub enum Goal {
 
 /// One observed neighbor, enriched from the observer's memory + the neighbor's
 /// persona. `dist2`/`opinion`/`faction`/`kind` are the network features; `id`
-/// and `pos` are what the pointer head targets.
+/// and `pos` are what the pointer head targets. `rel_pos` and `cell_class`
+/// expose the spatial context consumed by the utility scorer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct NeighborView {
     pub present: bool,
@@ -45,7 +46,12 @@ pub struct NeighborView {
     pub faction: u8,
     pub kind: u8,
     pub id: Option<EntityId>,
+    /// Absolute position used by the intent target head.
     pub pos: (i32, i32),
+    /// Neighbor position relative to the observing agent.
+    pub rel_pos: (i32, i32),
+    /// Scenario-defined tile/cell class at the neighbor position.
+    pub cell_class: u8,
 }
 
 /// The fixed-size encoded observation handed to the SOUL.
@@ -54,6 +60,9 @@ pub struct AgentObs {
     pub tick: u64,
     /// Self needs, fixed-point in `[0, NEED_ONE]`.
     pub self_stats: [i16; N_STATS],
+    /// Self position and scenario-defined tile/cell class.
+    pub self_pos: (i32, i32),
+    pub self_cell_class: u8,
     pub neighbors: [NeighborView; K_NEIGHBORS],
     /// Counts of remembered events by kind.
     pub events: [u16; N_EVENT_KINDS],
@@ -63,6 +72,7 @@ pub struct AgentObs {
     pub goal: u8,
 }
 
+
 /// Build the encoded observation. `cands` is every candidate neighbor; only the
 /// nearest `K_NEIGHBORS` (by `dist2`, ties broken by entity index) reach the
 /// slots — so adding faraway population changes neither the struct size nor the
@@ -70,6 +80,8 @@ pub struct AgentObs {
 pub fn encode(
     tick: u64,
     self_stats: [i16; N_STATS],
+    self_pos: (i32, i32),
+    self_cell_class: u8,
     mut cands: Vec<NeighborView>,
     events: [u16; N_EVENT_KINDS],
     tool_mask: u32,
@@ -87,6 +99,8 @@ pub fn encode(
     AgentObs {
         tick,
         self_stats,
+        self_pos,
+        self_cell_class,
         neighbors,
         events,
         tool_mask,
@@ -139,6 +153,8 @@ mod tests {
             kind: 0,
             id: Some(id),
             pos: idx_pos,
+            rel_pos: idx_pos,
+            cell_class: 0,
         }
     }
 
@@ -153,11 +169,16 @@ mod tests {
         let obs = encode(
             42,
             [700, 100, 550],
+            (0, 0),
+            0,
             vec![view((9, 9), 162, far), view((1, 0), 1, near)],
             [3, 1, 2, 0],
             0b0000_1111,
         );
 
+        assert_eq!(obs.self_pos, (0, 0));
+        assert_eq!(obs.self_cell_class, 0);
+        assert_eq!(obs.neighbors[0].rel_pos, (1, 0));
         assert_eq!(obs.tick, 42);
         assert_eq!(obs.self_stats, [700, 100, 550]);
         assert_eq!(obs.events, [3, 1, 2, 0]);
@@ -185,7 +206,15 @@ mod tests {
                 let e = w.spawn((i, 0));
                 cands.push(view((i, 0), i * i, e));
             }
-            encode(0, [500, 500, 500], cands, [0; N_EVENT_KINDS], u32::MAX)
+            encode(
+                0,
+                [500, 500, 500],
+                (0, 0),
+                0,
+                cands,
+                [0; N_EVENT_KINDS],
+                u32::MAX,
+            )
         };
 
         let small = build(10);

@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[project]
+name = "mini-world-training"
+version = "0.1.0"
+description = "Train a tiny SOUL policy from mini-world JSONL decision records"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=2.0,<3",
+  "onnx>=1.16,<2",
+  "onnxruntime>=1.18,<2",
+  "torch>=2.3,<3",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0,<9"]
+
+[project.scripts]
+mw-train = "mw_training.train:main"

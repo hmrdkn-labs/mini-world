@@ -10,7 +10,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::rc::Rc;
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 pub const OUTCOME_WINDOW: u64 = 8;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PersonaRecord {
@@ -25,12 +25,18 @@ pub struct NeighborRecord {
     pub faction: u8,
     pub kind: u8,
     pub id_slot: Option<u32>,
+    /// Absolute position retained for pointer-target reconstruction.
     pub pos: [i32; 2],
+    /// Relative position consumed by the scorer.
+    pub rel_pos: [i32; 2],
+    pub cell_class: u8,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ObsRecord {
     pub tick: u64,
     pub self_stats: [i16; 3],
+    pub self_pos: [i32; 2],
+    pub self_cell_class: u8,
     pub neighbors: [NeighborRecord; K_NEIGHBORS],
     pub events: [u16; 4],
     pub tool_mask: u32,
@@ -41,6 +47,9 @@ pub struct DecisionRecord {
     pub tool: String,
     pub target_slot: Option<u32>,
     pub params: serde_json::Value,
+    /// Difference between the best and second-best afforded-tool scores.
+    /// `i32::MAX` marks records without two scorer candidates (e.g. replays).
+    pub score_margin: i32,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EventRecord {
@@ -112,6 +121,8 @@ fn obs_record(o: AgentObs) -> ObsRecord {
     ObsRecord {
         tick: o.tick,
         self_stats: o.self_stats,
+        self_pos: [o.self_pos.0, o.self_pos.1],
+        self_cell_class: o.self_cell_class,
         neighbors: o.neighbors.map(|n| NeighborRecord {
             present: n.present,
             dist2: n.dist2,
@@ -120,6 +131,8 @@ fn obs_record(o: AgentObs) -> ObsRecord {
             kind: n.kind,
             id_slot: n.id.map(|x| x.index()),
             pos: [n.pos.0, n.pos.1],
+            rel_pos: [n.rel_pos.0, n.rel_pos.1],
+            cell_class: n.cell_class,
         }),
         events: o.events,
         tool_mask: o.tool_mask,
@@ -141,6 +154,7 @@ fn decision_record(t: &DecisionTrace) -> DecisionRecord {
         tool,
         target_slot,
         params,
+        score_margin: t.score_margin,
     }
 }
 fn event_record(e: &Event) -> EventRecord {
@@ -435,7 +449,7 @@ mod tests {
     #[test]
     fn schema_json_round_trip() {
         let r = TrajectoryRecord {
-            schema_version: 1,
+            schema_version: SCHEMA_VERSION,
             seed: 7,
             tick: 3,
             agent_slot: 1,
@@ -446,6 +460,8 @@ mod tests {
             obs: ObsRecord {
                 tick: 3,
                 self_stats: [900, 800, 700],
+                self_pos: [2, 3],
+                self_cell_class: 1,
                 neighbors: std::array::from_fn(|_| NeighborRecord {
                     present: false,
                     dist2: 0,
@@ -454,6 +470,8 @@ mod tests {
                     kind: 0,
                     id_slot: None,
                     pos: [0, 0],
+                    rel_pos: [0, 0],
+                    cell_class: 0,
                 }),
                 events: [0; 4],
                 tool_mask: 3,
@@ -464,6 +482,7 @@ mod tests {
                 tool: "move".into(),
                 target_slot: None,
                 params: serde_json::json!({"dx":1,"dy":0}),
+                score_margin: 42,
             },
             outcome: OutcomeRecord {
                 events: Vec::new(),
