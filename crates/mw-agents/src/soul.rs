@@ -340,6 +340,62 @@ impl<B: Body> UtilitySoul<B> {
             obs.tool_mask,
         ))
     }
+    /// Encode every agent's rich observation for a batch policy. The returned
+    /// rows are in stable entity-slot order and preserve the utility soul's
+    /// memory/persona context without running the scorer.
+    pub fn batch_observations(&self, obs: &[Observation]) -> Vec<AgentObs> {
+        obs.iter()
+            .enumerate()
+            .filter_map(|(slot, observation)| self.encode_observation(observation, slot))
+            .collect()
+    }
+
+    /// Return the persona for a stable entity slot.
+    pub fn persona_at(&self, slot: usize) -> Option<Persona> {
+        self.personas.get(slot).copied()
+    }
+
+    /// Convert a neural tool/target choice through the scenario body codec.
+    /// This keeps neural policies on the exact same validated intent contract
+    /// as the utility scorer.
+    pub fn intent_from_tool(
+        &self,
+        slot: usize,
+        obs: &AgentObs,
+        tool: u32,
+        target_slot: Option<usize>,
+    ) -> Intent {
+        let Some(&entity) = self.ids.get(slot) else {
+            return Intent::Idle;
+        };
+        let Some(&self_pos) = self.positions.get(slot) else {
+            return Intent::Idle;
+        };
+        let target = target_slot
+            .and_then(|i| obs.neighbors.get(i))
+            .and_then(|n| n.present.then_some(n.id))
+            .flatten();
+        let target_pos = target_slot
+            .and_then(|i| obs.neighbors.get(i))
+            .filter(|n| n.present)
+            .map(|n| n.pos);
+        self.body.to_intent(
+            entity,
+            obs.tick,
+            self_pos,
+            &Choice {
+                tool,
+                target,
+                target_pos,
+                goal: obs.goal,
+            },
+        )
+    }
+
+    /// Record a tool selected by an external batch policy.
+    pub fn record_external_tool(&mut self, tool: u32) {
+        self.record_tool(tool);
+    }
 
     fn score(&self, obs: &AgentObs, p: &Persona) -> (Choice, i32) {
         let deficits = [

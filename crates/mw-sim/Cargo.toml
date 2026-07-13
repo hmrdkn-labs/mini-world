@@ -13,6 +13,7 @@ mw-core.workspace = true
 mw-village = { path = "../mw-village" }
 mw-agents = { path = "../mw-agents" }
 mw-text = { path = "../mw-text" }
+mw-neural = { path = "../mw-neural" }
 serde.workspace = true
 serde_json.workspace = true
 clap = { version = "4", features = ["derive"] }

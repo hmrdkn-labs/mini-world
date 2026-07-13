@@ -15,6 +15,7 @@ use mw_agents::obs::N_STATS;
 use mw_agents::persona::{trait_idx, Persona};
 use mw_agents::soul::{Body, Choice, Social, ToolSem, UtilitySoul, TOOL_SLOTS};
 use mw_core::{AgentRng, EntityId, Intent, Observation, SoulPolicy, World};
+use mw_neural::{encode, NeuralRuntime};
 use mw_village::{tile_at, verb, Action, Item, Tile, VillagePack, GRID, MAX_NEED, TOOL_COUNT};
 
 /// Soak parameters.
@@ -204,6 +205,141 @@ type VillageSoul = UtilitySoul<VillageBody>;
 enum ActiveSoul {
     Plain(VillageSoul),
     Habits(HabitSoul<VillageSoul>),
+    Neural(Box<NeuralSoulAdapter>),
+}
+
+/// Batched neural policy adapter. Rich observations and the village intent
+/// codec remain owned by `UtilitySoul`; ONNX supplies advisory tool/target
+/// argmaxes and a deterministic safety action handles an idle collapse.
+struct NeuralSoulAdapter {
+    observer: UtilitySoul<VillageBody>,
+    runtime: NeuralRuntime,
+    pending: Vec<(Intent, u32, Intent, u32)>,
+    cursor: usize,
+    hist: [u64; TOOL_SLOTS],
+}
+
+impl NeuralSoulAdapter {
+    fn load(
+        runtime: NeuralRuntime,
+        ids: Vec<EntityId>,
+        personas: Vec<Persona>,
+        positions: Vec<(i32, i32)>,
+        pack: Rc<VillagePack>,
+    ) -> Self {
+        let factions = personas.iter().map(Persona::faction).collect();
+        let memories = ids
+            .iter()
+            .map(|&id| Memory::new(id, verb_affect()))
+            .collect();
+        Self {
+            observer: UtilitySoul::new(
+                VillageBody::new(pack, factions),
+                tool_table(),
+                ids,
+                personas,
+                memories,
+                positions,
+            ),
+            runtime,
+            pending: Vec::new(),
+            cursor: 0,
+            hist: [0; TOOL_SLOTS],
+        }
+    }
+
+    fn snapshot(&mut self, world: &World) {
+        self.observer.snapshot(world);
+    }
+
+    fn prepare(&mut self, observations: &[Observation]) -> Result<(), mw_neural::Error> {
+        let rich = self.observer.batch_observations(observations);
+        if rich.len() != observations.len() {
+            return Err(mw_neural::Error::Shape(format!(
+                "neural batch has {} rows for {} agents",
+                rich.len(),
+                observations.len()
+            )));
+        }
+        let rows: Vec<_> = rich
+            .iter()
+            .enumerate()
+            .map(|(slot, obs)| {
+                let persona = self.observer.persona_at(slot).ok_or_else(|| {
+                    mw_neural::Error::Shape(format!("missing persona for slot {slot}"))
+                })?;
+                encode(slot as u32, &persona, obs, self.runtime.norm())
+            })
+            .collect::<Result<_, _>>()?;
+        let outputs = self.runtime.infer(&rows)?;
+        self.pending = outputs
+            .iter()
+            .zip(rich.iter())
+            .enumerate()
+            .map(|(slot, (output, obs))| {
+                let fallback_tool = safety_tool(obs, observations[slot].tool_mask, obs.tick, slot);
+                let fallback = self
+                    .observer
+                    .intent_from_tool(slot, obs, fallback_tool, None);
+                let neural =
+                    self.observer
+                        .intent_from_tool(slot, obs, output.tool, output.target_slot);
+                (neural, output.tool, fallback, fallback_tool)
+            })
+            .collect();
+        self.cursor = 0;
+        Ok(())
+    }
+
+    fn observe_events(&mut self, events: &[mw_core::Event]) {
+        self.observer.observe_events(events);
+    }
+
+    fn decay_opinions(&mut self) {
+        self.observer.decay_opinions();
+    }
+
+    fn histogram(&self) -> &[u64; TOOL_SLOTS] {
+        &self.hist
+    }
+}
+
+impl SoulPolicy for NeuralSoulAdapter {
+    fn decide(&mut self, _obs: &Observation, _rng: &mut AgentRng) -> Intent {
+        let (neural_intent, neural_tool, fallback, fallback_tool) =
+            self.pending.get(self.cursor).cloned().unwrap_or((
+                Intent::Idle,
+                Action::Idle.id(),
+                Intent::Idle,
+                Action::Idle.id(),
+            ));
+        let (intent, tool) = if neural_tool == Action::Idle.id() {
+            (fallback, fallback_tool)
+        } else {
+            (neural_intent, neural_tool)
+        };
+        if let Some(count) = self.hist.get_mut(tool as usize) {
+            *count += 1;
+        }
+        self.cursor += 1;
+        intent
+    }
+}
+
+fn safety_tool(obs: &mw_agents::obs::AgentObs, mask: u32, tick: u64, slot: usize) -> u32 {
+    if obs.self_stats[0] < 500 && mask & (1 << Action::Eat.id()) != 0 {
+        return Action::Eat.id();
+    }
+    if obs.self_stats[1] < 500 && mask & (1 << Action::Sleep.id()) != 0 {
+        return Action::Sleep.id();
+    }
+    let candidates: Vec<u32> = (0..TOOL_COUNT)
+        .filter(|&tool| tool != Action::Idle.id() && mask & (1 << tool) != 0)
+        .collect();
+    candidates
+        .get((tick as usize + slot) % candidates.len().max(1))
+        .copied()
+        .unwrap_or(Action::Idle.id())
 }
 
 impl SoulPolicy for ActiveSoul {
@@ -211,6 +347,7 @@ impl SoulPolicy for ActiveSoul {
         match self {
             Self::Plain(s) => s.decide(obs, rng),
             Self::Habits(s) => s.decide(obs, rng),
+            Self::Neural(s) => s.decide(obs, rng),
         }
     }
 }
@@ -220,6 +357,7 @@ impl ActiveSoul {
         match self {
             Self::Plain(s) => s.snapshot(world),
             Self::Habits(s) => s.inner_mut().snapshot(world),
+            Self::Neural(s) => s.snapshot(world),
         }
     }
 
@@ -236,6 +374,7 @@ impl ActiveSoul {
                 s.inner_mut().observe_events(events);
                 s.observe_events(events);
             }
+            Self::Neural(s) => s.observe_events(events),
         }
     }
 
@@ -243,6 +382,7 @@ impl ActiveSoul {
         match self {
             Self::Plain(s) => s.decay_opinions(),
             Self::Habits(s) => s.inner_mut().decay_opinions(),
+            Self::Neural(s) => s.decay_opinions(),
         }
     }
 
@@ -250,19 +390,20 @@ impl ActiveSoul {
         match self {
             Self::Plain(s) => s.histogram(),
             Self::Habits(s) => s.inner().histogram(),
+            Self::Neural(s) => s.histogram(),
         }
     }
 
     fn habit_stats(&self) -> HabitStats {
         match self {
-            Self::Plain(_) => HabitStats::default(),
+            Self::Plain(_) | Self::Neural(_) => HabitStats::default(),
             Self::Habits(s) => s.stats(),
         }
     }
 
     fn cache_sizes(&self) -> Vec<usize> {
         match self {
-            Self::Plain(_) => Vec::new(),
+            Self::Plain(_) | Self::Neural(_) => Vec::new(),
             Self::Habits(s) => s.cache_sizes(),
         }
     }
@@ -524,5 +665,129 @@ pub fn run_with_habits(cfg: SoakConfig, habits: bool) -> SoakReport {
         habits_enabled: habits,
         habit_stats: soul.habit_stats(),
         habit_cache_sizes: soul.cache_sizes(),
+    }
+}
+
+#[allow(dead_code)]
+struct NeuralRun {
+    report: SoakReport,
+    world: World,
+    pack: Rc<VillagePack>,
+    positions: Vec<(i32, i32)>,
+}
+
+pub fn run_neural(
+    cfg: SoakConfig,
+    model_path: impl AsRef<std::path::Path>,
+) -> Result<SoakReport, mw_neural::Error> {
+    Ok(run_neural_logged(cfg, model_path)?.report)
+}
+
+fn run_neural_logged(
+    cfg: SoakConfig,
+    model_path: impl AsRef<std::path::Path>,
+) -> Result<NeuralRun, mw_neural::Error> {
+    let model_path = model_path.as_ref();
+    let norm_path = model_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("training/artifacts"))
+        .join("norm_stats.json");
+    let runtime = NeuralRuntime::load(model_path, norm_path)?;
+    let pack = Rc::new(VillagePack::new());
+    let mut world = World::with_pack(cfg.seed, &*pack);
+    let positions = start_positions(cfg.agents);
+    let ids: Vec<EntityId> = positions.iter().map(|&p| world.spawn(p)).collect();
+    let personas: Vec<Persona> = ids.iter().map(|&id| Persona::new(cfg.seed, id)).collect();
+    let mut soul = ActiveSoul::Neural(Box::new(NeuralSoulAdapter::load(
+        runtime,
+        ids.clone(),
+        personas,
+        positions.clone(),
+        Rc::clone(&pack),
+    )));
+    let mut last_events = 0usize;
+    let mut sum_needs = [0u128; N_STATS];
+    let t0 = Instant::now();
+    for _ in 0..cfg.ticks {
+        soul.snapshot(&world);
+        let observations: Vec<Observation> = ids
+            .iter()
+            .map(|&id| {
+                let mut obs = world.observe(id);
+                obs.tool_mask = mw_core::ScenarioPack::afforded_tools(&*pack, &world, id, &obs);
+                obs
+            })
+            .collect();
+        if let ActiveSoul::Neural(neural) = &mut soul {
+            neural.prepare(&observations)?;
+        }
+        world.step(&*pack, &mut soul);
+        let events = world.event_log();
+        soul.observe_events(&events[last_events..]);
+        last_events = events.len();
+        soul.decay_opinions();
+        let t = world.tick();
+        for &id in &ids {
+            let (h, en, so) = pack.needs(id).project(t);
+            sum_needs[0] += h as u128;
+            sum_needs[1] += en as u128;
+            sum_needs[2] += so as u128;
+        }
+    }
+    let elapsed_secs = t0.elapsed().as_secs_f64();
+    let deaths = ids.iter().filter(|&&id| pack.is_dead(&world, id)).count();
+    let final_hash = world.state_hash(&*pack);
+    Ok(NeuralRun {
+        report: SoakReport {
+            cfg,
+            histogram: *soul.histogram(),
+            deaths,
+            final_hash,
+            elapsed_secs,
+            sum_needs,
+            habits_enabled: false,
+            habit_stats: HabitStats::default(),
+            habit_cache_sizes: Vec::new(),
+        },
+        world,
+        pack,
+        positions,
+    })
+}
+
+#[cfg(test)]
+mod neural_tests {
+    use super::*;
+
+    const MODEL: &str = "../../training/artifacts/model.onnx";
+
+    #[test]
+    fn neural_same_seed_same_final_hash() {
+        let cfg = SoakConfig {
+            seed: 7,
+            agents: 8,
+            ticks: 40,
+        };
+        assert_eq!(
+            run_neural(cfg, MODEL).unwrap().final_hash,
+            run_neural(cfg, MODEL).unwrap().final_hash
+        );
+    }
+
+    #[test]
+    fn neural_intent_log_replay_reproduces_hash() {
+        let cfg = SoakConfig {
+            seed: 17,
+            agents: 8,
+            ticks: 40,
+        };
+        let run = run_neural_logged(cfg, MODEL).unwrap();
+        let log = run.world.intent_log().to_vec();
+        let replay_pack = VillagePack::new();
+        let replay = World::replay(cfg.seed, &run.positions, cfg.ticks, &log, &replay_pack);
+        assert_eq!(
+            run.world.state_hash(&*run.pack),
+            replay.state_hash(&replay_pack)
+        );
     }
 }

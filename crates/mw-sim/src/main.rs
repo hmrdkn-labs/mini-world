@@ -19,6 +19,12 @@ enum HabitsFlag {
     Off,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum PolicyFlag {
+    Utility,
+    Neural,
+}
+
 #[derive(Parser)]
 #[command(about = "mini-world headless kernel runner")]
 struct Args {
@@ -52,7 +58,7 @@ enum Command {
         #[arg(long)]
         include_replays: bool,
     },
-    /// Village social-sim soak with the utility SOUL.
+    /// Village social-sim soak with the utility or neural SOUL.
     Soak {
         #[arg(long, default_value_t = 10_000)]
         ticks: u64,
@@ -60,6 +66,12 @@ enum Command {
         agents: i32,
         #[arg(long, default_value_t = 1)]
         seed: u64,
+        /// Utility or batched neural policy.
+        #[arg(long, value_enum, default_value_t = PolicyFlag::Utility)]
+        policy: PolicyFlag,
+        /// ONNX model path for `--policy neural`.
+        #[arg(long, default_value = "training/artifacts/model.onnx")]
+        onnx_path: String,
         /// Replay routine decisions from the per-agent habit cache.
         #[arg(long, value_enum, default_value_t = HabitsFlag::On)]
         habits: HabitsFlag,
@@ -135,18 +147,35 @@ fn run_kernel(ticks: u64, entities: i32, seed: u64) {
     );
 }
 
-fn run_soak(ticks: u64, agents: i32, seed: u64, habits: bool) {
-    let report = soak::run_with_habits(
-        SoakConfig {
-            seed,
-            agents,
-            ticks,
-        },
-        habits,
-    );
+fn run_soak(ticks: u64, agents: i32, seed: u64, policy: PolicyFlag, onnx_path: &str, habits: bool) {
+    let report = match policy {
+        PolicyFlag::Utility => Ok(soak::run_with_habits(
+            SoakConfig {
+                seed,
+                agents,
+                ticks,
+            },
+            habits,
+        )),
+        PolicyFlag::Neural => soak::run_neural(
+            SoakConfig {
+                seed,
+                agents,
+                ticks,
+            },
+            onnx_path,
+        ),
+    };
+    let report = match report {
+        Ok(report) => report,
+        Err(e) => {
+            eprintln!("neural soak failed: {e}");
+            std::process::exit(1);
+        }
+    };
     println!(
-        "soak seed={} agents={} ticks={} habits={}",
-        report.cfg.seed, report.cfg.agents, report.cfg.ticks, habits
+        "soak seed={} agents={} ticks={} policy={:?} habits={}",
+        report.cfg.seed, report.cfg.agents, report.cfg.ticks, policy, habits
     );
     println!(
         "ticks/sec={:.0} actions={} deaths={} (starvation)",
@@ -304,8 +333,17 @@ fn main() {
             ticks,
             agents,
             seed,
+            policy,
+            onnx_path,
             habits,
-        } => run_soak(ticks, agents, seed, matches!(habits, HabitsFlag::On)),
+        } => run_soak(
+            ticks,
+            agents,
+            seed,
+            policy,
+            &std::env::var("MW_ONNX_PATH").unwrap_or(onnx_path),
+            matches!(habits, HabitsFlag::On),
+        ),
         Command::Trajectories {
             seed,
             agents,

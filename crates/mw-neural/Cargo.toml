@@ -1,0 +1,14 @@
+[package]
+name = "mw-neural"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+mw-agents = { path = "../mw-agents" }
+mw-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tract-onnx = "0.21"
+
+[dev-dependencies]

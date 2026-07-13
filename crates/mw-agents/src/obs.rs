@@ -72,7 +72,6 @@ pub struct AgentObs {
     pub goal: u8,
 }
 
-
 /// Build the encoded observation. `cands` is every candidate neighbor; only the
 /// nearest `K_NEIGHBORS` (by `dist2`, ties broken by entity index) reach the
 /// slots — so adding faraway population changes neither the struct size nor the
