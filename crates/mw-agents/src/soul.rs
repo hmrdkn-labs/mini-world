@@ -190,6 +190,17 @@ impl<B: Body> UtilitySoul<B> {
         self.memories[owner.index() as usize].opinion(other)
     }
 
+    /// Read-only view of a character's memory (opinions, salient facts) by
+    /// entity slot — for inspection UIs. The UI never mutates through it.
+    pub fn memory(&self, slot: usize) -> &Memory {
+        &self.memories[slot]
+    }
+
+    /// Read-only view of a character's persona by entity slot.
+    pub fn persona(&self, slot: usize) -> &Persona {
+        &self.personas[slot]
+    }
+
     fn ingest_to(&mut self, e: EntityId, ev: &Event) {
         let i = e.index() as usize;
         if i < self.memories.len() {

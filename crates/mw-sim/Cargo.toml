@@ -14,3 +14,7 @@ mw-village = { path = "../mw-village" }
 mw-agents = { path = "../mw-agents" }
 mw-text = { path = "../mw-text" }
 clap = { version = "4", features = ["derive"] }
+# TUI debug viewer (mw-sim only): ratatui draws the panes, crossterm drives the
+# terminal + input. TestBackend (in ratatui) powers the headless `--smoke` path.
+ratatui = "0.29"
+crossterm = "0.28"

@@ -48,6 +48,18 @@ enum Command {
         #[arg(long, default_value_t = 1)]
         seed: u64,
     },
+    /// Ratatui debug viewer over the live village sim. Without `--smoke` it
+    /// opens the interactive TUI; `--smoke` renders one headless frame (CI-safe,
+    /// no TTY) and exits.
+    View {
+        /// Render one frame to a test backend and exit 0 (no TTY needed).
+        #[arg(long)]
+        smoke: bool,
+        #[arg(long, default_value_t = 50)]
+        agents: i32,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+    },
 }
 
 /// Picks one of four unit steps from the entity's own RNG stream. It ignores the
@@ -152,6 +164,22 @@ fn run_ff(days: u64, agents: i32, seed: u64) {
     }
 }
 
+/// Open the debug viewer. `MW_TEXT_LIVE=1` selects the real TEXT backend for
+/// dialogue backfill; otherwise the offline mock renders lines.
+fn run_view(smoke: bool, agents: i32, seed: u64) {
+    let live = std::env::var("MW_TEXT_LIVE").as_deref() == Ok("1");
+    let cfg = mw_sim::view::ViewConfig { seed, agents, live };
+    if smoke {
+        // Prove the frame is non-empty and shaped, then exit 0 with no TTY.
+        let buf = mw_sim::view::smoke_buffer(cfg);
+        assert!(buf.contains("Map 16x16"), "map pane missing");
+        println!("view --smoke ok: {} rows rendered", buf.lines().count());
+    } else if let Err(e) = mw_sim::view::run(cfg) {
+        eprintln!("viewer error: {e}");
+        std::process::exit(1);
+    }
+}
+
 fn main() {
     match Args::parse().cmd {
         Command::Run {
@@ -165,5 +193,10 @@ fn main() {
             seed,
         } => run_soak(ticks, agents, seed),
         Command::Ff { days, agents, seed } => run_ff(days, agents, seed),
+        Command::View {
+            smoke,
+            agents,
+            seed,
+        } => run_view(smoke, agents, seed),
     }
 }

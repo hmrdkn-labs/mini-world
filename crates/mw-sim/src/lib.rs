@@ -4,3 +4,4 @@
 pub mod dialogue;
 pub mod director;
 pub mod soak;
+pub mod view;

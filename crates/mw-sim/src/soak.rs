@@ -6,6 +6,7 @@
 //! kernel RNG streams, needs/opinions from integer closed-form updates, and the
 //! only wall-clock read is the throughput timer — which never feeds sim state.
 
+use std::rc::Rc;
 use std::time::Instant;
 
 use mw_agents::memory::{Memory, OPINION_ONE};
@@ -107,12 +108,21 @@ impl SoakReport {
 /// The scenario side of the SOUL socket for the village: needs projection,
 /// precomputed factions, and turning a chosen tool into a kernel intent with the
 /// village's routing + verb codec.
-struct VillageBody<'a> {
-    pack: &'a VillagePack,
+pub struct VillageBody {
+    pack: Rc<VillagePack>,
     factions: Vec<u8>,
 }
 
-impl Body for VillageBody<'_> {
+impl VillageBody {
+    /// Wrap a shared pack and its precomputed faction table. The `Rc` lets the
+    /// body live inside a soul that is stored alongside the pack (the TUI keeps
+    /// both in one struct) without a self-referential borrow.
+    pub fn new(pack: Rc<VillagePack>, factions: Vec<u8>) -> Self {
+        Self { pack, factions }
+    }
+}
+
+impl Body for VillageBody {
     fn self_stats(&self, entity: EntityId, tick: u64) -> [i16; N_STATS] {
         let (h, en, so) = self.pack.needs(entity).project(tick);
         [h as i16, en as i16, so as i16]
@@ -169,7 +179,7 @@ impl Body for VillageBody<'_> {
     }
 }
 
-impl VillageBody<'_> {
+impl VillageBody {
     /// An item the entity carries (food first), for give/drop.
     fn held(&self, entity: EntityId) -> Item {
         if self.pack.inventory(entity, Item::Food) > 0 {
@@ -264,7 +274,7 @@ pub fn start_positions(count: i32) -> Vec<(i32, i32)> {
 /// Village tool-scoring table, indexed by [`Action`] id. Encodes which need
 /// each tool relieves, its persona affinity, and its social role — the scenario
 /// knowledge the generic scorer consumes.
-fn tool_table() -> Vec<ToolSem> {
+pub fn tool_table() -> Vec<ToolSem> {
     let mut t = vec![ToolSem::default(); TOOL_COUNT as usize];
     t[Action::Move as usize] = ToolSem {
         is_move: true,
@@ -319,7 +329,7 @@ fn tool_table() -> Vec<ToolSem> {
 }
 
 /// Gifts build rapport: receiving one (or giving one) shifts opinion positively.
-fn verb_affect() -> Vec<(u32, i32)> {
+pub fn verb_affect() -> Vec<(u32, i32)> {
     let g = OPINION_ONE / 4;
     vec![
         (verb(Action::Give, Item::Food), g),
@@ -351,8 +361,8 @@ fn hash_state(world: &World, pack: &VillagePack, ids: &[EntityId]) -> u64 {
 
 /// Run the soak and return its report.
 pub fn run(cfg: SoakConfig) -> SoakReport {
-    let pack = VillagePack::new();
-    let mut world = World::with_pack(cfg.seed, &pack);
+    let pack = Rc::new(VillagePack::new());
+    let mut world = World::with_pack(cfg.seed, &*pack);
 
     let positions = start_positions(cfg.agents);
     let ids: Vec<EntityId> = positions.iter().map(|&p| world.spawn(p)).collect();
@@ -363,10 +373,7 @@ pub fn run(cfg: SoakConfig) -> SoakReport {
         .map(|&id| Memory::new(id, verb_affect()))
         .collect();
 
-    let body = VillageBody {
-        pack: &pack,
-        factions,
-    };
+    let body = VillageBody::new(Rc::clone(&pack), factions);
     let mut soul = UtilitySoul::new(
         body,
         tool_table(),
@@ -383,7 +390,7 @@ pub fn run(cfg: SoakConfig) -> SoakReport {
         // Snapshot before stepping: positions are frozen within a tick, so one
         // snapshot serves every decision that tick.
         soul.snapshot(&world);
-        world.step(&pack, &mut soul);
+        world.step(&*pack, &mut soul);
         let events = world.event_log();
         soul.observe_events(&events[last_events..]);
         last_events = events.len();
