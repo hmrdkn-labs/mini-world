@@ -7,6 +7,7 @@
 
 use clap::{Parser, Subcommand};
 use mw_core::{AgentRng, Intent, KernelPack, Observation, SoulPolicy, World};
+use mw_sim::director::{self, FfConfig, TICKS_PER_DAY};
 use mw_sim::soak::{self, SoakConfig};
 
 #[derive(Parser)]
@@ -31,6 +32,17 @@ enum Command {
     Soak {
         #[arg(long, default_value_t = 10_000)]
         ticks: u64,
+        #[arg(long, default_value_t = 50)]
+        agents: i32,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+    },
+    /// Analytic AFK fast-forward: advance the village by an in-game span using
+    /// the cold LOD ring, then print the returning-player digest.
+    Ff {
+        /// In-game days to skip (default one week).
+        #[arg(long, default_value_t = 7)]
+        days: u64,
         #[arg(long, default_value_t = 50)]
         agents: i32,
         #[arg(long, default_value_t = 1)]
@@ -94,11 +106,48 @@ fn run_soak(ticks: u64, agents: i32, seed: u64) {
         report.deaths,
     );
     println!("final_hash={:#018x}", report.final_hash);
+    let m = report.mean_needs();
+    println!(
+        "mean_needs hunger={:.0} energy={:.0} social={:.0}",
+        m[0], m[1], m[2]
+    );
     println!(
         "action histogram (max share {:.1}%):",
         100.0 * report.max_share()
     );
     for line in report.histogram_lines() {
+        println!("{line}");
+    }
+}
+
+fn run_ff(days: u64, agents: i32, seed: u64) {
+    let ticks = days * TICKS_PER_DAY;
+    let report = director::fast_forward(FfConfig {
+        seed,
+        agents,
+        ticks,
+        ..FfConfig::default()
+    });
+    println!("fast-forward seed={seed} agents={agents} days={days} ({ticks} ticks)");
+    println!(
+        "wall={:.3}s ticks/sec={:.0} events={} deaths={}",
+        report.elapsed_secs,
+        report.ticks_per_sec(),
+        report.ledger_len,
+        report.deaths,
+    );
+    let m = report.mean_needs;
+    println!(
+        "mean_needs hunger={:.0} energy={:.0} social={:.0}",
+        m[0], m[1], m[2]
+    );
+    println!("final_hash={:#018x}", report.final_hash);
+    println!("top events:");
+    for line in &report.digest.top {
+        println!("{line}");
+    }
+    println!("per-agent digest (first 8):");
+    for line in report.digest.per_agent.iter().take(8) {
         println!("{line}");
     }
 }
@@ -115,5 +164,6 @@ fn main() {
             agents,
             seed,
         } => run_soak(ticks, agents, seed),
+        Command::Ff { days, agents, seed } => run_ff(days, agents, seed),
     }
 }

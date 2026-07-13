@@ -15,6 +15,7 @@ pub use queue::{Priority, PriorityQueue};
 
 use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use mw_core::{SpeakRequest, TextBackend};
@@ -82,6 +83,9 @@ pub struct LlamaServerBackend {
     base_url: String,
     slots: u32,
     agent: ureq::Agent,
+    /// TEXT render calls served — the attention-gate test seam. Atomic so the
+    /// counter survives the `&self` render path without extra locking.
+    renders: AtomicU64,
 }
 
 impl LlamaServerBackend {
@@ -114,6 +118,7 @@ impl LlamaServerBackend {
             base_url: format!("http://127.0.0.1:{port}"),
             slots: config.slots,
             agent,
+            renders: AtomicU64::new(0),
         };
         backend.await_health(config.startup_timeout)?;
         Ok(backend)
@@ -138,6 +143,7 @@ impl LlamaServerBackend {
     /// Render one line for a committed act. `conversation_id` maps to a stable
     /// server slot so a conversation's persona prefix stays warm across turns.
     pub fn render_line(&self, spec: &PromptSpec<'_>, conversation_id: u64) -> Result<Rendered> {
+        self.renders.fetch_add(1, Ordering::Relaxed);
         let slot = (conversation_id % self.slots as u64) as i64;
         let body = json!({
             "messages": prompt::messages(spec),
@@ -169,6 +175,12 @@ impl LlamaServerBackend {
     /// OS process id of the managed server child.
     pub fn pid(&self) -> u32 {
         self.child.id()
+    }
+
+    /// Total TEXT render calls served so far — proves attention-gating (only
+    /// observed/backfilled conversations cost a render).
+    pub fn render_count(&self) -> u64 {
+        self.renders.load(Ordering::Relaxed)
     }
 }
 

@@ -27,7 +27,7 @@ const DECAY_FACTOR: i64 = 65_477;
 /// Intrinsic opinion nudge for a `Spoke` act — talking builds mild rapport even
 /// before scenario-specific topic semantics. Interact verbs carry no intrinsic
 /// valence; the scenario supplies their deltas (verbs are pack-owned semantics).
-const SPEAK_AFFECT: i32 = OPINION_ONE / 8;
+pub const SPEAK_AFFECT: i32 = OPINION_ONE / 8;
 
 /// One remembered event plus its precomputed magnitude (kind weight + |delta|),
 /// the recency-independent half of the salience score.

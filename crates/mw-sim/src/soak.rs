@@ -42,6 +42,11 @@ pub struct SoakReport {
     pub deaths: usize,
     pub final_hash: u64,
     pub elapsed_secs: f64,
+    /// Per-tick sum of every agent's projected (hunger, energy, social),
+    /// accumulated across the whole run. Divided by `ticks * agents` it is the
+    /// time-averaged mean need level — the reference the cold fast-forward drift
+    /// test compares against. Deterministic in `(seed, agents, ticks)`.
+    pub sum_needs: [u128; N_STATS],
 }
 
 impl SoakReport {
@@ -55,6 +60,16 @@ impl SoakReport {
         } else {
             f64::INFINITY
         }
+    }
+
+    /// Time-averaged mean need level per stat over the whole run.
+    pub fn mean_needs(&self) -> [f64; N_STATS] {
+        let denom = (self.cfg.ticks * self.cfg.agents.max(0) as u64).max(1) as f64;
+        let mut m = [0.0; N_STATS];
+        for (i, s) in self.sum_needs.iter().enumerate() {
+            m[i] = *s as f64 / denom;
+        }
+        m
     }
 
     /// Largest single-tool share of all decisions — the histogram-degeneracy
@@ -362,6 +377,7 @@ pub fn run(cfg: SoakConfig) -> SoakReport {
     );
 
     let mut last_events = 0usize;
+    let mut sum_needs = [0u128; N_STATS];
     let t0 = Instant::now();
     for _ in 0..cfg.ticks {
         // Snapshot before stepping: positions are frozen within a tick, so one
@@ -372,6 +388,14 @@ pub fn run(cfg: SoakConfig) -> SoakReport {
         soul.observe_events(&events[last_events..]);
         last_events = events.len();
         soul.decay_opinions();
+        // Sample the post-tick need trajectory for the mean-need reference.
+        let t = world.tick();
+        for &id in &ids {
+            let (h, en, so) = pack.needs(id).project(t);
+            sum_needs[0] += h as u128;
+            sum_needs[1] += en as u128;
+            sum_needs[2] += so as u128;
+        }
     }
     let elapsed_secs = t0.elapsed().as_secs_f64();
 
@@ -383,5 +407,6 @@ pub fn run(cfg: SoakConfig) -> SoakReport {
         deaths,
         final_hash,
         elapsed_secs,
+        sum_needs,
     }
 }
