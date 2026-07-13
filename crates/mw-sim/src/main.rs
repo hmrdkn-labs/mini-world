@@ -37,6 +37,21 @@ enum Command {
         #[arg(long, default_value_t = 1)]
         seed: u64,
     },
+    /// Export one JSONL trajectory record per scored SOUL decision.
+    Trajectories {
+        #[arg(long)]
+        seed: u64,
+        #[arg(long, default_value_t = 50)]
+        agents: i32,
+        #[arg(long, default_value_t = 10_000)]
+        ticks: u64,
+        #[arg(long)]
+        out: String,
+        #[arg(long, value_enum, default_value_t = HabitsFlag::On)]
+        habits: HabitsFlag,
+        #[arg(long)]
+        include_replays: bool,
+    },
     /// Village social-sim soak with the utility SOUL.
     Soak {
         #[arg(long, default_value_t = 10_000)]
@@ -149,6 +164,7 @@ fn run_soak(ticks: u64, agents: i32, seed: u64, habits: bool) {
         100.0 * hs.hit_rate(),
         report.habit_cache_sizes.iter().sum::<usize>(),
     );
+
     println!("final_hash={:#018x}", report.final_hash);
     let m = report.mean_needs();
     println!(
@@ -161,6 +177,39 @@ fn run_soak(ticks: u64, agents: i32, seed: u64, habits: bool) {
     );
     for line in report.histogram_lines() {
         println!("{line}");
+    }
+}
+
+fn run_trajectories(
+    seed: u64,
+    agents: i32,
+    ticks: u64,
+    out: &str,
+    habits: bool,
+    include_replays: bool,
+) {
+    match mw_sim::trajectory::export_trajectories(seed, agents, ticks, out, habits, include_replays)
+    {
+        Ok(stats) => {
+            println!("trajectories seed={seed} agents={agents} ticks={ticks} habits={habits} include_replays={include_replays}");
+            println!(
+                "records={} bytes={} hash={:#018x} final_hash={:#018x}",
+                stats.records, stats.bytes, stats.hash, stats.final_hash
+            );
+            println!("decision distribution:");
+            for (id, count) in stats.per_tool.iter().enumerate() {
+                if *count > 0 {
+                    let name = mw_village::Action::from_id(id as u32)
+                        .map(|a| format!("{a:?}").to_lowercase())
+                        .unwrap_or_else(|| format!("tool_{id}"));
+                    println!("  {name}={count}");
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("trajectory export failed: {e}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -257,6 +306,21 @@ fn main() {
             seed,
             habits,
         } => run_soak(ticks, agents, seed, matches!(habits, HabitsFlag::On)),
+        Command::Trajectories {
+            seed,
+            agents,
+            ticks,
+            out,
+            habits,
+            include_replays,
+        } => run_trajectories(
+            seed,
+            agents,
+            ticks,
+            &out,
+            matches!(habits, HabitsFlag::On),
+            include_replays,
+        ),
         Command::Ff { days, agents, seed } => run_ff(days, agents, seed),
         Command::View {
             smoke,

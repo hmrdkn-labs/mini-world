@@ -137,6 +137,7 @@ pub struct HabitSoul<P: SoulPolicy> {
     hit_hook: Option<fn(&mut P, &Observation, &Intent)>,
     tool_getter: Option<fn(&P) -> Option<u32>>,
     tool_hit_hook: Option<fn(&mut P, &Observation, &Intent, u32)>,
+    trace_hook: Option<fn(&mut P, &Observation, &Intent, u32)>,
 }
 
 pub type HabitCache<P> = HabitSoul<P>;
@@ -156,6 +157,7 @@ impl<P: SoulPolicy> HabitSoul<P> {
             hit_hook: None,
             tool_getter: None,
             tool_hit_hook: None,
+            trace_hook: None,
         }
     }
 
@@ -181,6 +183,20 @@ impl<P: SoulPolicy> HabitSoul<P> {
         let mut this = Self::new(inner, ids);
         this.tool_getter = Some(getter);
         this.tool_hit_hook = Some(hook);
+        this
+    }
+
+    /// Construct a cache with an optional callback that records exact replay
+    /// observations. The callback is invoked only on cache hits.
+    pub fn with_hit_hook_and_tool_and_trace(
+        inner: P,
+        ids: Vec<EntityId>,
+        hook: fn(&mut P, &Observation, &Intent, u32),
+        getter: fn(&P) -> Option<u32>,
+        trace: fn(&mut P, &Observation, &Intent, u32),
+    ) -> Self {
+        let mut this = Self::with_hit_hook_and_tool(inner, ids, hook, getter);
+        this.trace_hook = Some(trace);
         this
     }
     pub fn inner(&self) -> &P {
@@ -386,6 +402,9 @@ impl<P: SoulPolicy> SoulPolicy for HabitSoul<P> {
                 hook(&mut self.inner, obs, &intent, tool);
             } else if let Some(hook) = self.hit_hook {
                 hook(&mut self.inner, obs, &intent);
+            }
+            if let (Some(trace), Some(tool)) = (self.trace_hook, tool) {
+                trace(&mut self.inner, obs, &intent, tool);
             }
             return intent;
         }

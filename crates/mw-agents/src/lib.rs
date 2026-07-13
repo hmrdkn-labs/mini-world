@@ -25,4 +25,4 @@ pub use habits::{
 };
 pub use obs::{AgentObs, Goal, NeighborView, K_NEIGHBORS, NEED_ONE, N_EVENT_KINDS, N_STATS};
 pub use persona::{Persona, N_FACTIONS, N_TRAITS, N_WEIGHTS, PERSONA_ONE};
-pub use soul::{Body, Choice, Social, ToolSem, UtilitySoul, TOOL_SLOTS};
+pub use soul::{Body, Choice, DecisionTrace, Social, ToolSem, UtilitySoul, TOOL_SLOTS};

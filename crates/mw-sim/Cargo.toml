@@ -13,6 +13,8 @@ mw-core.workspace = true
 mw-village = { path = "../mw-village" }
 mw-agents = { path = "../mw-agents" }
 mw-text = { path = "../mw-text" }
+serde.workspace = true
+serde_json.workspace = true
 clap = { version = "4", features = ["derive"] }
 # TUI debug viewer (mw-sim only): ratatui draws the panes, crossterm drives the
 # terminal + input. TestBackend (in ratatui) powers the headless `--smoke` path.

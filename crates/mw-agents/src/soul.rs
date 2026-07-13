@@ -126,11 +126,24 @@ pub struct UtilitySoul<B: Body> {
     hist: [u64; TOOL_SLOTS],
     /// Last scorer-selected tool, consumed by HabitSoul when it stores a plan.
     last_tool: Option<u32>,
+    /// Optional export telemetry. Kept off in normal runs so the sim hot path
+    /// and its allocation behavior remain unchanged.
+    telemetry: bool,
+    traces: Vec<DecisionTrace>,
     // Per-tick call resolution: the kernel calls `decide` once per entity in
     // stable index order, so a counter reset on each new tick recovers which
     // entity is deciding without the kernel observation carrying an id.
     last_tick: Option<u64>,
     cursor: usize,
+}
+
+/// A policy decision and the exact rich observation consumed by the scorer.
+#[derive(Clone, Debug)]
+pub struct DecisionTrace {
+    pub obs: AgentObs,
+    pub choice: Choice,
+    pub intent: Intent,
+    pub replay: bool,
 }
 
 impl<B: Body> UtilitySoul<B> {
@@ -157,14 +170,50 @@ impl<B: Body> UtilitySoul<B> {
             memories,
             hist: [0; TOOL_SLOTS],
             last_tool: None,
+            telemetry: false,
+            traces: Vec::new(),
             last_tick: None,
             cursor: 0,
         }
     }
 
-    /// Refresh the position snapshot from the world. Call once per tick before
-    /// stepping — positions do not change mid-tick, so one snapshot is valid for
-    /// every entity's decision that tick.
+    /// Enable collection of exact observations and decisions for dataset export.
+    pub fn enable_telemetry(&mut self) {
+        self.telemetry = true;
+    }
+
+    pub fn drain_traces(&mut self) -> Vec<DecisionTrace> {
+        std::mem::take(&mut self.traces)
+    }
+
+    pub fn record_replay(&mut self, obs: &Observation, intent: &Intent, tool: u32) {
+        if !self.telemetry {
+            return;
+        }
+        let slot = self.cursor.saturating_sub(1);
+        let Some(agent_obs) = self.encode_observation(obs, slot) else {
+            return;
+        };
+        let target = match intent {
+            Intent::Interact { target, .. } | Intent::Speak { target, .. } => Some(*target),
+            Intent::Move { .. } | Intent::Idle => None,
+        };
+        let target_pos = target.and_then(|id| self.positions.get(id.index() as usize).copied());
+        let choice = Choice {
+            tool,
+            target,
+            target_pos,
+            goal: agent_obs.goal,
+        };
+        self.traces.push(DecisionTrace {
+            obs: agent_obs,
+            choice,
+            intent: intent.clone(),
+            replay: true,
+        });
+    }
+
+    /// Refresh the position snapshot from the world before a tick step.
     pub fn snapshot(&mut self, world: &mw_core::World) {
         for (slot, &id) in self.ids.iter().enumerate() {
             if let Some(e) = world.entity(id) {
@@ -253,6 +302,38 @@ impl<B: Body> UtilitySoul<B> {
     }
 
     /// Score every afforded tool and pick the argmax.
+    fn encode_observation(&self, obs: &Observation, slot: usize) -> Option<AgentObs> {
+        let entity = *self.ids.get(slot)?;
+        let self_pos = *self.positions.get(slot)?;
+        let self_stats = self.body.self_stats(entity, obs.tick);
+        let mem = self.memories.get(slot)?;
+        let mut cands = Vec::with_capacity(self.positions.len().saturating_sub(1));
+        for (s, &pos) in self.positions.iter().enumerate() {
+            if s == slot {
+                continue;
+            }
+            let nid = self.ids[s];
+            let dx = (pos.0 - self_pos.0) as i64;
+            let dy = (pos.1 - self_pos.1) as i64;
+            cands.push(NeighborView {
+                present: true,
+                dist2: (dx * dx + dy * dy) as i32,
+                opinion: mem.opinion(nid),
+                faction: self.body.faction(nid),
+                kind: 0,
+                id: Some(nid),
+                pos,
+            });
+        }
+        Some(obs::encode(
+            obs.tick,
+            self_stats,
+            cands,
+            event_counts(mem),
+            obs.tool_mask,
+        ))
+    }
+
     fn score(&self, obs: &AgentObs, p: &Persona, rng: &mut AgentRng) -> Choice {
         let deficits = [
             (NEED_ONE - obs.self_stats[0]).max(0) as i32,
@@ -375,45 +456,45 @@ impl<B: Body> SoulPolicy for UtilitySoul<B> {
         }
         let slot = self.cursor;
         self.cursor += 1;
-
         let entity = self.ids[slot];
         let persona = self.personas[slot];
         let self_pos = self.positions[slot];
 
         if obs.tool_mask == 0 {
-            return Intent::Idle; // e.g. the dead afford nothing
-        }
-
-        // Encode the rich observation: self needs from the body, true K-nearest
-        // neighbors from the position snapshot, opinions from this character's
-        // memory, factions from each neighbor's body.
-        let self_stats = self.body.self_stats(entity, obs.tick);
-        let mem = &self.memories[slot];
-        let mut cands = Vec::with_capacity(self.positions.len().saturating_sub(1));
-        for (s, &pos) in self.positions.iter().enumerate() {
-            if s == slot {
-                continue;
+            if self.telemetry {
+                if let Some(agent_obs) = self.encode_observation(obs, slot) {
+                    self.traces.push(DecisionTrace {
+                        obs: agent_obs,
+                        choice: Choice {
+                            tool: 0,
+                            target: None,
+                            target_pos: None,
+                            goal: agent_obs.goal,
+                        },
+                        intent: Intent::Idle,
+                        replay: false,
+                    });
+                }
             }
-            let nid = self.ids[s];
-            let dx = (pos.0 - self_pos.0) as i64;
-            let dy = (pos.1 - self_pos.1) as i64;
-            cands.push(NeighborView {
-                present: true,
-                dist2: (dx * dx + dy * dy) as i32,
-                opinion: mem.opinion(nid),
-                faction: self.body.faction(nid),
-                kind: 0,
-                id: Some(nid),
-                pos,
-            });
+            return Intent::Idle;
         }
-        let events = event_counts(mem);
-        let agent_obs = obs::encode(obs.tick, self_stats, cands, events, obs.tool_mask);
 
+        let agent_obs = self
+            .encode_observation(obs, slot)
+            .expect("cursor slot must match utility state");
         let choice = self.score(&agent_obs, &persona, rng);
         self.last_tool = Some(choice.tool);
         self.hist[choice.tool as usize] += 1;
-        self.body.to_intent(entity, obs.tick, self_pos, &choice)
+        let intent = self.body.to_intent(entity, obs.tick, self_pos, &choice);
+        if self.telemetry {
+            self.traces.push(DecisionTrace {
+                obs: agent_obs,
+                choice,
+                intent: intent.clone(),
+                replay: false,
+            });
+        }
+        intent
     }
 }
 
