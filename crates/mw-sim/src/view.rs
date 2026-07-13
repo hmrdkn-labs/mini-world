@@ -13,6 +13,8 @@
 
 use std::io;
 use std::rc::Rc;
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
@@ -32,7 +34,8 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 
 use mw_agents::dialogue::{
-    ConversationLog, FocusPoint, MockRenderer, PersonaRegistry, SliceRegistry, Vocab,
+    ConversationLog, DialogueRenderer, FocusPoint, MockRenderer, PersonaCard, PersonaRegistry,
+    SliceRegistry, Vocab,
 };
 use mw_agents::memory::{Memory, OPINION_ONE};
 use mw_agents::persona::Persona;
@@ -86,6 +89,105 @@ enum Text {
     Mock(MockRenderer),
     Live(LlamaServerBackend),
 }
+#[derive(Clone, Copy, Debug)]
+enum RenderSource {
+    Heard,
+    Backfill,
+}
+
+struct RenderJob {
+    index: usize,
+    speaker: PersonaCard,
+    listener: PersonaCard,
+    act: String,
+    topic: String,
+    context: String,
+    conversation: u64,
+}
+
+struct RenderResponse {
+    index: usize,
+    text: String,
+}
+
+trait RenderBackend: Send + 'static {
+    fn render(&mut self, job: &RenderJob) -> String;
+}
+
+impl RenderBackend for Text {
+    fn render(&mut self, job: &RenderJob) -> String {
+        let req = mw_agents::dialogue::RenderRequest {
+            speaker: &job.speaker,
+            listener: &job.listener,
+            act: &job.act,
+            topic: &job.topic,
+            context: &job.context,
+            conversation: job.conversation,
+        };
+        match self {
+            Text::Mock(renderer) => renderer.render(&req),
+            Text::Live(backend) => LlamaDialogue { backend }.render(&req),
+        }
+    }
+}
+
+struct RenderWorker {
+    requests: Sender<RenderJob>,
+    responses: Receiver<RenderResponse>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl RenderWorker {
+    fn new<B: RenderBackend>(mut backend: B) -> Self {
+        let (request_tx, request_rx) = mpsc::channel::<RenderJob>();
+        let (response_tx, response_rx) = mpsc::channel();
+        let thread = thread::Builder::new()
+            .name("mw-text-render".to_string())
+            .spawn(move || {
+                while let Ok(job) = request_rx.recv() {
+                    let response = RenderResponse {
+                        index: job.index,
+                        text: backend.render(&job),
+                    };
+                    if response_tx.send(response).is_err() {
+                        break;
+                    }
+                }
+            })
+            .expect("spawn dialogue render worker");
+        Self {
+            requests: request_tx,
+            responses: response_rx,
+            thread: Some(thread),
+        }
+    }
+
+    fn request(&self, job: RenderJob) -> bool {
+        self.requests.send(job).is_ok()
+    }
+
+    fn try_response(&self) -> Result<RenderResponse, TryRecvError> {
+        self.responses.try_recv()
+    }
+}
+
+impl Drop for RenderWorker {
+    fn drop(&mut self) {
+        // Closing the request channel lets the worker exit after its final line.
+        // Joining keeps the managed llama-server child owned and reaped.
+        let (closed_tx, _) = mpsc::channel();
+        let old = std::mem::replace(&mut self.requests, closed_tx);
+        drop(old);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+struct PendingRender {
+    index: usize,
+    source: RenderSource,
+}
 
 /// Everything the viewer owns: the live sim (`pack`/`world`/`soul`), the LOD
 /// director, the conversation ledger, and the UI cursor state.
@@ -100,7 +202,8 @@ pub struct App {
     registry: SliceRegistry,
     vocab: Vocab,
     log: ConversationLog,
-    text: Text,
+    renderer: RenderWorker,
+    pending: Vec<PendingRender>,
     focus: (i32, i32),
     selected: usize,
     dlg_sel: usize,
@@ -147,6 +250,7 @@ impl App {
         } else {
             Text::Mock(MockRenderer::new())
         };
+        let renderer = RenderWorker::new(text);
         Self {
             cfg,
             pack,
@@ -158,7 +262,8 @@ impl App {
             registry,
             vocab: Vocab::village(),
             log: ConversationLog::new(),
-            text,
+            renderer,
+            pending: Vec::new(),
             focus: (8, 8),
             selected: 0,
             dlg_sel: 0,
@@ -200,7 +305,6 @@ impl App {
         let new: Vec<Event> = self.world.event_log()[self.last_events..end].to_vec();
         self.last_events = end;
         self.soul.observe_events(&new);
-        self.log.ingest(&new);
         let tick = self.world.tick();
         for ev in &new {
             if let Some(line) = self.notable(ev) {
@@ -226,8 +330,8 @@ impl App {
         }
     }
 
-    /// Render (and record to the feed) every latent conversation the focus now
-    /// observes — dialogue lines appear exactly when someone is watching.
+    /// Queue every latent conversation the focus now observes. TEXT runs off
+    /// the UI thread; the response is applied by [`Self::poll_renders`].
     fn render_observed(&mut self) {
         let focus = self.focus_point();
         let to_render: Vec<usize> = (0..self.log.len())
@@ -237,26 +341,85 @@ impl App {
             })
             .collect();
         for i in to_render {
-            let line = self.render_row(i);
-            let name = self.registry.card(self.log.rows()[i].speaker).name.clone();
-            self.feed.push(format!("[heard] {name}: {line}"));
+            self.request_render(i, RenderSource::Heard);
         }
     }
 
-    /// Render conversation row `i` through the active backend, returning the
-    /// line. Cached after the first render (the backfill cache).
-    fn render_row(&mut self, i: usize) -> String {
-        match &self.text {
-            Text::Mock(m) => self
-                .log
-                .render(i, &self.registry, m, &self.vocab)
+    fn request_render(&mut self, i: usize, source: RenderSource) -> bool {
+        if i >= self.log.len()
+            || self.log.rows()[i].text.is_some()
+            || self.pending.iter().any(|p| p.index == i)
+        {
+            return false;
+        }
+        let row = self.log.rows()[i].clone();
+        let job = RenderJob {
+            index: i,
+            speaker: self.registry.card(row.speaker).clone(),
+            listener: self.registry.card(row.listener).clone(),
+            act: self
+                .vocab
+                .acts
+                .get(row.act as usize)
+                .map_or("speak with", String::as_str)
                 .to_string(),
-            Text::Live(b) => {
-                let d = LlamaDialogue { backend: b };
-                self.log
-                    .render(i, &self.registry, &d, &self.vocab)
-                    .to_string()
+            topic: self
+                .vocab
+                .topics
+                .get(row.topic as usize)
+                .map_or("things", String::as_str)
+                .to_string(),
+            context: format!(
+                "A chance meeting in the village; {}.",
+                match row.outcome.signum() {
+                    1 => "the exchange warmed relations",
+                    -1 => "the exchange soured relations",
+                    _ => "relations were unchanged",
+                }
+            ),
+            conversation: row.speaker.index() as u64,
+        };
+        if self.renderer.request(job) {
+            self.pending.push(PendingRender { index: i, source });
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Apply completed lines without ever letting TEXT write into sim state.
+    fn poll_renders(&mut self) {
+        while let Ok(response) = self.renderer.try_response() {
+            let Some(pending) = self
+                .pending
+                .iter()
+                .position(|p| p.index == response.index)
+                .map(|p| self.pending.remove(p))
+            else {
+                continue;
+            };
+            if response.index >= self.log.len() {
+                continue;
             }
+            if self.log.rows()[response.index].text.is_some() {
+                continue;
+            }
+            let name = self
+                .registry
+                .card(self.log.rows()[response.index].speaker)
+                .name
+                .clone();
+            let prefix = match pending.source {
+                RenderSource::Heard => "[heard]",
+                RenderSource::Backfill => "[backfill]",
+            };
+            let text = response.text;
+            self.log.cache_rendered(response.index, text);
+            let line = self.log.rows()[response.index]
+                .text
+                .as_deref()
+                .unwrap_or_default();
+            self.feed.push(format!("{prefix} {name}: {line}"));
         }
     }
 
@@ -324,14 +487,8 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                if self.dlg_sel < self.log.len() && self.log.rows()[self.dlg_sel].text.is_none() {
-                    let line = self.render_row(self.dlg_sel);
-                    let name = self
-                        .registry
-                        .card(self.log.rows()[self.dlg_sel].speaker)
-                        .name
-                        .clone();
-                    self.feed.push(format!("[backfill] {name}: {line}"));
+                if self.dlg_sel < self.log.len() {
+                    self.request_render(self.dlg_sel, RenderSource::Backfill);
                 }
             }
             KeyCode::Char(' ') => {
@@ -627,17 +784,19 @@ fn render_dialogue(f: &mut Frame, area: Rect, app: &App) {
                 app.registry.card(c.speaker).name,
                 app.registry.card(c.listener).name
             );
-            let body = match &c.text {
-                Some(t) => t.clone(),
-                None => format!("[latent] {act} about {topic}"),
-            };
             let mut style = Style::default();
-            if c.text.is_none() {
+            let cached = c.text.as_ref();
+            if cached.is_none() {
                 style = style.fg(Color::DarkGray);
             }
             if i == app.dlg_sel {
                 style = style.add_modifier(Modifier::REVERSED);
             }
+            let body = match cached {
+                Some(t) => t.clone(),
+                None if app.pending.iter().any(|p| p.index == i) => "[rendering...]".to_string(),
+                None => format!("[latent] {act} about {topic}"),
+            };
             ListItem::new(format!("{who}: {body}")).style(style)
         })
         .collect();
@@ -695,6 +854,7 @@ pub fn run(cfg: ViewConfig) -> io::Result<()> {
 fn event_loop<B: Backend>(term: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
     let frame = Duration::from_millis(80);
     loop {
+        app.poll_renders();
         term.draw(|f| render(f, app))?;
         // Poll for input up to one frame — the wall-clock pacing seam. It never
         // reaches sim state; it only decides how many ticks to advance.
@@ -710,6 +870,7 @@ fn event_loop<B: Backend>(term: &mut Terminal<B>, app: &mut App) -> io::Result<(
                 _ => {}
             }
         }
+        app.poll_renders();
         // Advance the sim by the current speed once per frame budget.
         if start.elapsed() >= frame || !event::poll(Duration::ZERO)? {
             for _ in 0..app.speed.ticks_per_frame() {
@@ -744,4 +905,74 @@ fn buffer_to_string(buf: &Buffer) -> String {
         s.push('\n');
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct SlowMockTextBackend {
+        calls: std::sync::Arc<AtomicUsize>,
+    }
+
+    impl RenderBackend for SlowMockTextBackend {
+        fn render(&mut self, job: &RenderJob) -> String {
+            std::thread::sleep(Duration::from_millis(500));
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            format!("{} to {}: rendered", job.speaker.name, job.listener.name)
+        }
+    }
+
+    #[test]
+    fn slow_render_does_not_block_frames_and_caches_response() {
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let mut app = App::new(ViewConfig {
+            seed: 7,
+            agents: 2,
+            live: false,
+        });
+        let old = std::mem::replace(
+            &mut app.renderer,
+            RenderWorker::new(SlowMockTextBackend {
+                calls: std::sync::Arc::clone(&calls),
+            }),
+        );
+        drop(old);
+        let ids = app.ids.clone();
+        app.log.ingest(&[Event::Spoke {
+            tick: 0,
+            actor: ids[0],
+            target: ids[1],
+            act: 0,
+            topic: 0,
+        }]);
+        assert!(app.request_render(0, RenderSource::Backfill));
+
+        let start = Instant::now();
+        let mut frames = 0;
+        while start.elapsed() < Duration::from_millis(250) {
+            app.poll_renders();
+            let backend = TestBackend::new(110, 44);
+            let mut term = Terminal::new(backend).expect("test backend");
+            term.draw(|f| render(f, &mut app)).expect("draw");
+            app.step();
+            frames += 1;
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(frames >= 4, "frames={frames}");
+        assert!(app.log.rows()[0].text.is_none());
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while app.log.rows()[0].text.is_none() && Instant::now() < deadline {
+            app.poll_renders();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(app.log.rows()[0].text.is_some());
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert!(!app.request_render(0, RenderSource::Backfill));
+        app.poll_renders();
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
 }

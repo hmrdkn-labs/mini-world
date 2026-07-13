@@ -24,10 +24,25 @@ pub const SALIENT_K: usize = 4;
 const DECAY_SHIFT: u32 = 16;
 const DECAY_FACTOR: i64 = 65_477;
 
-/// Intrinsic opinion nudge for a `Spoke` act — talking builds mild rapport even
-/// before scenario-specific topic semantics. Interact verbs carry no intrinsic
-/// valence; the scenario supplies their deltas (verbs are pack-owned semantics).
+/// Intrinsic opinion nudge for a `Spoke` act. Act deltas are deliberately
+/// modest so conversation is a relationship signal, not a survival override.
+/// `SPEAK_AFFECT` is the default greet delta and remains the dialogue baseline.
 pub const SPEAK_AFFECT: i32 = OPINION_ONE / 8;
+
+/// Return `(actor→target, target→actor)` deltas for a speak act. The two
+/// directions are explicit because a taunt, warning, or gift need not be
+/// received as the giver experiences it.
+pub fn speak_affect(act: u32) -> (i32, i32) {
+    match act {
+        0 => (OPINION_ONE / 8, OPINION_ONE / 8),    // greet
+        1 => (OPINION_ONE / 6, OPINION_ONE / 5),    // befriend
+        2 => (-OPINION_ONE / 16, -OPINION_ONE / 8), // taunt
+        3 => (OPINION_ONE / 16, OPINION_ONE / 16),  // trade
+        4 => (OPINION_ONE / 8, OPINION_ONE / 6),    // console
+        5 => (0, -OPINION_ONE / 16),                // warn
+        _ => (SPEAK_AFFECT, SPEAK_AFFECT),
+    }
+}
 
 /// One remembered event plus its precomputed magnitude (kind weight + |delta|),
 /// the recency-independent half of the salience score.
@@ -54,13 +69,14 @@ pub struct Memory {
     /// Oldest slot index; the ring is `[head..] ++ [..head]` in age order.
     head: usize,
     opinions: Vec<(EntityId, i32)>,
-    /// Scenario-owned verb → opinion-delta table (fixed-point). Kept explicit so
-    /// memory stays decoupled from any pack's verb vocabulary.
-    verb_affect: Vec<(u32, i32)>,
+    /// Scenario-owned verb → `(actor→target, target→actor)` opinion deltas
+    /// (fixed-point). Kept explicit so memory stays decoupled from any pack's
+    /// verb vocabulary.
+    verb_affect: Vec<(u32, i32, i32)>,
 }
 
 impl Memory {
-    pub fn new(owner: EntityId, verb_affect: Vec<(u32, i32)>) -> Self {
+    pub fn new(owner: EntityId, verb_affect: Vec<(u32, i32, i32)>) -> Self {
         Self {
             owner,
             ring: Vec::new(),
@@ -71,8 +87,8 @@ impl Memory {
     }
 
     /// Record a kernel event that involves the owner (as actor or target),
-    /// pushing it into the ring and shifting the counterpart's opinion. Events
-    /// not involving the owner are ignored.
+    /// pushing it into the ring and shifting the counterpart's opinion.
+    /// Events not involving the owner are ignored.
     pub fn ingest(&mut self, event: &Event) {
         let (actor, target) = actor_target(event);
         let other = match (actor == self.owner, target) {
@@ -152,14 +168,31 @@ impl Memory {
     }
 
     fn event_delta(&self, event: &Event) -> i32 {
-        match event {
-            Event::Spoke { .. } => SPEAK_AFFECT,
+        let (actor, target) = actor_target(event);
+        let actor_view = match *event {
+            Event::Spoke { act, .. } => speak_affect(act).0,
             Event::Interacted { verb, .. } => self
                 .verb_affect
                 .iter()
-                .find(|(v, _)| v == verb)
-                .map_or(0, |(_, d)| *d),
+                .find(|(v, _, _)| *v == verb)
+                .map_or(0, |(_, actor_delta, _)| *actor_delta),
             _ => 0,
+        };
+        let target_view = match *event {
+            Event::Spoke { act, .. } => speak_affect(act).1,
+            Event::Interacted { verb, .. } => self
+                .verb_affect
+                .iter()
+                .find(|(v, _, _)| *v == verb)
+                .map_or(0, |(_, _, target_delta)| *target_delta),
+            _ => 0,
+        };
+        if self.owner == actor {
+            actor_view
+        } else if target == Some(self.owner) {
+            target_view
+        } else {
+            0
         }
     }
 }
@@ -212,8 +245,50 @@ mod tests {
         (w.spawn((0, 0)), w.spawn((1, 0)))
     }
 
-    fn affect() -> Vec<(u32, i32)> {
-        vec![(VERB_GIVE, OPINION_ONE), (VERB_ATTACK, -2 * OPINION_ONE)]
+    fn affect() -> Vec<(u32, i32, i32)> {
+        vec![
+            // actor→target, target→actor
+            (VERB_GIVE, OPINION_ONE / 4, OPINION_ONE),
+            (VERB_ATTACK, -OPINION_ONE / 8, -2 * OPINION_ONE),
+        ]
+    }
+
+    #[test]
+    fn interaction_event_is_directional() {
+        let (giver, receiver) = ids();
+        let mut giver_memory = Memory::new(giver, affect());
+        let mut receiver_memory = Memory::new(receiver, affect());
+        let give = Event::Interacted {
+            tick: 0,
+            actor: giver,
+            target: receiver,
+            verb: VERB_GIVE,
+        };
+        giver_memory.ingest(&give);
+        receiver_memory.ingest(&give);
+        assert_eq!(giver_memory.opinion(receiver), OPINION_ONE / 4);
+        assert_eq!(receiver_memory.opinion(giver), OPINION_ONE);
+
+        let attack = Event::Interacted {
+            tick: 1,
+            actor: giver,
+            target: receiver,
+            verb: VERB_ATTACK,
+        };
+        giver_memory.ingest(&attack);
+        receiver_memory.ingest(&attack);
+        assert_eq!(
+            giver_memory.opinion(receiver),
+            OPINION_ONE / 4 - OPINION_ONE / 8
+        );
+        assert_eq!(
+            receiver_memory.opinion(giver),
+            OPINION_ONE - 2 * OPINION_ONE
+        );
+        assert!(
+            receiver_memory.opinion(giver) < giver_memory.opinion(receiver),
+            "victim should retain the stronger negative delta"
+        );
     }
 
     #[test]
@@ -227,8 +302,27 @@ mod tests {
             target: me,
             verb: VERB_GIVE,
         });
-        // Exact delta, no decay applied yet.
+        // Exact receiver delta, no decay applied yet.
         assert_eq!(mem.opinion(other), OPINION_ONE);
+    }
+
+    #[test]
+    fn speak_affect_is_modest_and_act_dependent() {
+        let (speaker, listener) = ids();
+        let mut speaker_memory = Memory::new(speaker, Vec::new());
+        let mut listener_memory = Memory::new(listener, Vec::new());
+        let taunt = Event::Spoke {
+            tick: 0,
+            actor: speaker,
+            target: listener,
+            act: 2,
+            topic: 0,
+        };
+        speaker_memory.ingest(&taunt);
+        listener_memory.ingest(&taunt);
+        assert_eq!(speaker_memory.opinion(listener), -OPINION_ONE / 16);
+        assert_eq!(listener_memory.opinion(speaker), -OPINION_ONE / 8);
+        assert!(speak_affect(1).1 > speak_affect(0).1);
     }
 
     #[test]

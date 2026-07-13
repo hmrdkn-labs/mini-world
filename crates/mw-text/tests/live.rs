@@ -1,11 +1,16 @@
 //! Live gate tests. Ignored by default (spawn a real llama-server + model);
 //! run with `cargo test -p mw-text -- --ignored`.
 
+use mw_text::{Config, LlamaServerBackend, PromptSpec};
 use std::process::Command;
+use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::Instant;
 
-use mw_text::{Config, LlamaServerBackend, PromptSpec};
+static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(Mutex::default);
 
+fn test_lock() -> MutexGuard<'static, ()> {
+    TEST_LOCK.lock().expect("live test lock poisoned")
+}
 fn spec() -> PromptSpec<'static> {
     PromptSpec {
         persona: "Bramble, a gruff but warm-hearted village blacksmith who speaks plainly.",
@@ -19,6 +24,7 @@ fn spec() -> PromptSpec<'static> {
 #[test]
 #[ignore]
 fn renders_in_character_line_fast() {
+    let _lock = test_lock();
     let backend = LlamaServerBackend::spawn(Config::default()).expect("spawn llama-server");
     // Warm the model/slot once so we measure decode, not cold load.
     let _ = backend.render_line(&spec(), 1).expect("warmup render");
@@ -45,6 +51,7 @@ fn renders_in_character_line_fast() {
 #[test]
 #[ignore]
 fn second_turn_reuses_prefill() {
+    let _lock = test_lock();
     let backend = LlamaServerBackend::spawn(Config::default()).expect("spawn llama-server");
     let conv = 7;
 
@@ -71,6 +78,7 @@ fn second_turn_reuses_prefill() {
 #[test]
 #[ignore]
 fn drop_kills_server() {
+    let _lock = test_lock();
     let backend = LlamaServerBackend::spawn(Config::default()).expect("spawn llama-server");
     let pid = backend.pid();
     assert!(pid_alive(pid), "server should be running at pid {pid}");
@@ -79,6 +87,44 @@ fn drop_kills_server() {
     // Give the OS a beat to reap.
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert!(!pid_alive(pid), "server pid {pid} still alive after drop");
+}
+
+/// A leaked backend stands in for a parent that was SIGKILLed. A fresh backend
+/// must reap only the recorded llama-server, not a reused pid.
+#[test]
+#[ignore]
+fn stale_pidfile_reaps_orphaned_server() {
+    let _lock = test_lock();
+    let old = LlamaServerBackend::spawn(Config::default()).expect("spawn old llama-server");
+    let old_pid = old.pid();
+    assert_eq!(llama_server_count(), 1, "expected one old llama-server");
+    std::mem::forget(old);
+    assert!(pid_alive(old_pid), "leaked old server should remain alive");
+
+    let backend =
+        LlamaServerBackend::spawn(Config::default()).expect("reap and spawn fresh server");
+    let new_pid = backend.pid();
+    assert_ne!(new_pid, old_pid, "fresh backend should not reuse old pid");
+    assert_eq!(
+        llama_server_count(),
+        1,
+        "fresh spawn should replace old server"
+    );
+    let rendered = backend
+        .render_line(&spec(), 1)
+        .expect("fresh server is healthy");
+    assert!(!rendered.text.trim().is_empty());
+    drop(backend);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(llama_server_count(), 0, "drop should leave no llama-server");
+}
+
+fn llama_server_count() -> usize {
+    Command::new("pgrep")
+        .args(["-x", "llama-server"])
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).lines().count())
+        .unwrap_or(0)
 }
 
 /// True if a process with `pid` currently exists (via `kill -0`).

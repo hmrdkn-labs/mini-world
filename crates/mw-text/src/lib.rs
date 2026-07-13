@@ -13,7 +13,9 @@ mod queue;
 pub use prompt::PromptSpec;
 pub use queue::{Priority, PriorityQueue};
 
+use std::fs;
 use std::net::TcpListener;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -25,6 +27,129 @@ use serde_json::{json, Value};
 /// type, so a boxed std error keeps call sites honest without a new dependency.
 pub type Result<T, E = Box<dyn std::error::Error + Send + Sync>> = std::result::Result<T, E>;
 
+const PIDFILE_ENV: &str = "MW_LLAMA_PIDFILE";
+const PIDFILE_RELATIVE: &str = ".cache/mini-world/llama-server.pid";
+
+/// Location of the single managed server's pidfile. Tests can isolate this
+/// process-wide resource with `MW_LLAMA_PIDFILE`.
+pub fn pidfile_path() -> PathBuf {
+    if let Ok(path) = std::env::var(PIDFILE_ENV) {
+        return PathBuf::from(path);
+    }
+    let home = std::env::var_os("HOME").unwrap_or_else(|| ".".into());
+    PathBuf::from(home).join(PIDFILE_RELATIVE)
+}
+
+fn parse_pid(contents: &str) -> Option<u32> {
+    let first = contents.lines().next()?.trim();
+    let value = first.strip_prefix("pid=").unwrap_or(first);
+    value.parse().ok().filter(|pid: &u32| *pid != 0)
+}
+
+fn process_alive(pid: u32) -> bool {
+    if !Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    // A SIGKILLed child can remain as an unreaped zombie when its parent was
+    // leaked; it is no longer a live server and must not block reaping.
+    Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "stat="])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|status| status.split_whitespace().next().map(str::to_owned))
+        .map(|status| !status.starts_with('Z'))
+        .unwrap_or(false)
+}
+
+fn process_is_llama_server(pid: u32) -> bool {
+    let pid = pid.to_string();
+    let comm = Command::new("ps")
+        .args(["-p", &pid, "-o", "comm="])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|name| {
+            Path::new(name.trim())
+                .file_name()
+                .and_then(|name| name.to_str())
+                == Some("llama-server")
+        });
+    let command = Command::new("ps")
+        .args(["-p", &pid, "-o", "command="])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|line| line.split_whitespace().next().map(str::to_owned))
+        .map(|executable| {
+            Path::new(&executable)
+                .file_name()
+                .and_then(|name| name.to_str())
+                == Some("llama-server")
+        });
+    comm == Some(true) && command == Some(true)
+}
+
+fn kill_stale(pid: u32) -> Result<()> {
+    let status = Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status()?;
+    if !status.success() && process_alive(pid) {
+        return Err(format!("failed to kill stale llama-server pid {pid}").into());
+    }
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while process_alive(pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    if process_alive(pid) {
+        return Err(format!("stale llama-server pid {pid} did not exit").into());
+    }
+    Ok(())
+}
+
+fn reap_stale_server(path: &Path) -> Result<()> {
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if let Some(pid) = parse_pid(&contents) {
+        if process_alive(pid) && process_is_llama_server(pid) {
+            kill_stale(pid)?;
+        }
+    }
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn write_pidfile(path: &Path, pid: u32, port: u16) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, format!("pid={pid}\nport={port}\n"))?;
+    Ok(())
+}
+
+fn remove_pidfile_if_owned(path: &Path, pid: u32) {
+    let owned = fs::read_to_string(path)
+        .ok()
+        .and_then(|contents| parse_pid(&contents))
+        == Some(pid);
+    if owned {
+        let _ = fs::remove_file(path);
+    }
+}
 const DEFAULT_MODEL: &str = ".cache/mini-world/models/Qwen3-0.6B-Q4_0.gguf";
 const LLAMA_SERVER: &str = "/opt/homebrew/bin/llama-server";
 
@@ -83,6 +208,7 @@ pub struct LlamaServerBackend {
     base_url: String,
     slots: u32,
     agent: ureq::Agent,
+    pidfile: PathBuf,
     /// TEXT render calls served — the attention-gate test seam. Atomic so the
     /// counter survives the `&self` render path without extra locking.
     renders: AtomicU64,
@@ -91,6 +217,8 @@ pub struct LlamaServerBackend {
 impl LlamaServerBackend {
     /// Spawn `llama-server` and block until it reports healthy.
     pub fn spawn(config: Config) -> Result<Self> {
+        let pidfile = pidfile_path();
+        reap_stale_server(&pidfile)?;
         let port = free_port()?;
         let child = Command::new(LLAMA_SERVER)
             .args([
@@ -118,8 +246,10 @@ impl LlamaServerBackend {
             base_url: format!("http://127.0.0.1:{port}"),
             slots: config.slots,
             agent,
+            pidfile,
             renders: AtomicU64::new(0),
         };
+        write_pidfile(&backend.pidfile, backend.pid(), port)?;
         backend.await_health(config.startup_timeout)?;
         Ok(backend)
     }
@@ -187,8 +317,10 @@ impl LlamaServerBackend {
 impl Drop for LlamaServerBackend {
     fn drop(&mut self) {
         // Kill then reap so no orphaned server lingers holding the model in RAM.
+        let pid = self.child.id();
         let _ = self.child.kill();
         let _ = self.child.wait();
+        remove_pidfile_if_owned(&self.pidfile, pid);
     }
 }
 
@@ -229,5 +361,41 @@ fn act_label(code: u32) -> &'static str {
         4 => "threaten",
         5 => "comfort",
         _ => "speak with",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_pidfile(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("mini-world-{name}-{}.pid", std::process::id()))
+    }
+
+    #[test]
+    fn missing_pidfile_is_ignored() {
+        let path = test_pidfile("missing");
+        let _ = fs::remove_file(&path);
+        reap_stale_server(&path).expect("missing pidfile should be harmless");
+    }
+
+    #[test]
+    fn dead_pidfile_is_cleaned_without_killing() {
+        let path = test_pidfile("dead");
+        fs::write(&path, "pid=4294967295\nport=1234\n").expect("write test pidfile");
+        reap_stale_server(&path).expect("dead pidfile should be harmless");
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn reused_pidfile_is_not_killed() {
+        let path = test_pidfile("reused");
+        let pid = std::process::id();
+        fs::write(&path, format!("pid={pid}\nport=1234\n")).expect("write test pidfile");
+        assert!(process_alive(pid));
+        assert!(!process_is_llama_server(pid));
+        reap_stale_server(&path).expect("reused pidfile should be harmless");
+        assert!(process_alive(pid));
+        assert!(!path.exists());
     }
 }

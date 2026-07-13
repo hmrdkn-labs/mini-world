@@ -15,7 +15,7 @@ use std::cell::Cell;
 
 use mw_core::{EntityId, Event};
 
-use crate::memory::SPEAK_AFFECT;
+use crate::memory::speak_affect;
 use crate::persona::{trait_idx, Persona, N_TRAITS};
 
 /// A character's prompt identity: what the TEXT model is told it is voicing.
@@ -212,9 +212,9 @@ impl DialogueRenderer for MockRenderer {
     }
 }
 
-/// One committed conversation. The mechanical `outcome` (opinion delta) is
-/// applied to both parties' memory elsewhere; here it is only recorded. `text`
-/// is `None` while latent, `Some` once observed or backfilled (then cached).
+/// One committed conversation. The mechanical `outcome` is the speaker's
+/// directional opinion delta; the listener's counterpart is applied in memory.
+/// `text` is `None` while latent, `Some` once observed or backfilled (then cached).
 #[derive(Clone, Debug)]
 pub struct Conversation {
     pub tick: u64,
@@ -222,7 +222,7 @@ pub struct Conversation {
     pub listener: EntityId,
     pub act: u32,
     pub topic: u32,
-    /// Fixed-point opinion delta each party applied to the other.
+    /// Fixed-point opinion delta from the speaker's view.
     pub outcome: i32,
     pub text: Option<String>,
 }
@@ -240,8 +240,8 @@ impl ConversationLog {
     }
 
     /// Append a latent row for every `Spoke` in `events`. The mechanical outcome
-    /// is the intrinsic speak affect both parties apply through their memory
-    /// (recorded here for coherent backfill).
+    /// is the speaker's act-specific affect (the listener receives the
+    /// directional counterpart through memory), recorded for coherent backfill.
     pub fn ingest(&mut self, events: &[Event]) {
         for event in events {
             if let Event::Spoke {
@@ -258,7 +258,7 @@ impl ConversationLog {
                     listener: target,
                     act,
                     topic,
-                    outcome: SPEAK_AFFECT,
+                    outcome: speak_affect(act).0,
                     text: None,
                 });
             }
@@ -275,6 +275,19 @@ impl ConversationLog {
 
     pub fn is_empty(&self) -> bool {
         self.rows.is_empty()
+    }
+
+    /// Store a completed worker render without invoking TEXT on the caller
+    /// thread. Returns whether this response filled a previously latent row.
+    pub fn cache_rendered(&mut self, i: usize, text: String) -> bool {
+        let Some(row) = self.rows.get_mut(i) else {
+            return false;
+        };
+        if row.text.is_some() {
+            return false;
+        }
+        row.text = Some(text);
+        true
     }
 
     /// Render row `i`'s line (or return the cached one), resolving personas via
@@ -390,7 +403,7 @@ mod tests {
         let row = &log.rows()[0];
         assert!(row.text.is_none(), "row starts latent");
         assert_eq!((row.act, row.topic), (2, 1));
-        assert_eq!(row.outcome, SPEAK_AFFECT);
+        assert_eq!(row.outcome, speak_affect(2).0);
     }
 
     #[test]

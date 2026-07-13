@@ -328,12 +328,14 @@ pub fn tool_table() -> Vec<ToolSem> {
     t
 }
 
-/// Gifts build rapport: receiving one (or giving one) shifts opinion positively.
-pub fn verb_affect() -> Vec<(u32, i32)> {
-    let g = OPINION_ONE / 4;
+/// Gifts build rapport: the receiver values the giver more than the giver
+/// values the act, so memories retain the interaction's direction.
+pub fn verb_affect() -> Vec<(u32, i32, i32)> {
+    let actor = OPINION_ONE / 4;
+    let receiver = OPINION_ONE;
     vec![
-        (verb(Action::Give, Item::Food), g),
-        (verb(Action::Give, Item::Water), g),
+        (verb(Action::Give, Item::Food), actor, receiver),
+        (verb(Action::Give, Item::Water), actor, receiver),
     ]
 }
 

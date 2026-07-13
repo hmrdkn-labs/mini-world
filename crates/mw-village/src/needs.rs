@@ -23,7 +23,10 @@ pub const SOCIAL_DECAY: i32 = 3;
 pub const STARVE_TICKS: u64 = 100;
 
 /// Restore amounts for the acts that satisfy each need.
-pub const EAT_GAIN: i32 = 600;
+/// Eating restores two hundred ticks of hunger; the shorter sustainable cycle
+/// makes the calibrated urgency policy exercise feeding instead of coasting on
+/// a single large reserve.
+pub const EAT_GAIN: i32 = 400;
 pub const SLEEP_GAIN: i32 = 500;
 pub const SPEAK_GAIN: i32 = 300;
 /// Drinking water is a small energy top-up.
@@ -159,7 +162,7 @@ mod tests {
     #[test]
     fn settle_then_restore_lands_on_decayed_level() {
         let mut n = Needs::full();
-        n.adjust(100, EAT_GAIN, 0, 0); // hunger 800 -> clamp(800+600)=1000
+        n.adjust(100, EAT_GAIN, 0, 0); // hunger 800 -> clamp(800+400)=1000
         assert_eq!(n.hunger(100), MAX_NEED);
         // Decay resumes from the settled tick, not from tick 0.
         assert_eq!(n.hunger(200), MAX_NEED - 2 * 100);

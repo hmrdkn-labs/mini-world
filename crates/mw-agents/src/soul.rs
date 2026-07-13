@@ -25,7 +25,11 @@ pub const TOOL_SLOTS: usize = 32;
 /// or home instead of lingering with a neighbor. A direct relief tool (eat/
 /// sleep), when afforded *here*, still outscores moving because it clears the
 /// whole deficit rather than one step of travel.
-const MOVE_FACTOR: i32 = 1000;
+const MOVE_FACTOR: i32 = 800;
+/// Hunger gets a superlinear reserve penalty: the same absolute deficit is more
+/// urgent when the remaining food reserve is small. This keeps social pressure
+/// useful while making a hungry agent reach the next valid food action in time.
+const HUNGER_CURVE: i32 = 8;
 /// Opinion-directed social pull (befriend high-opinion neighbors). Deliberately
 /// small: companionship is a preference layered on top of survival, never a
 /// reason to starve. The opinion factor is clamped to one "unit" so a long
@@ -215,7 +219,16 @@ impl<B: Body> UtilitySoul<B> {
             (NEED_ONE - obs.self_stats[1]).max(0) as i32,
             (NEED_ONE - obs.self_stats[2]).max(0) as i32,
         ];
-        let pressure = |i: usize| deficits[i] * p.weights[i] as i32 / PERSONA_ONE as i32;
+        let pressure = |i: usize| {
+            let base = deficits[i] * p.weights[i] as i32 / PERSONA_ONE as i32;
+            if i == 0 {
+                // Integer-only convex urgency; hunger pressure stays bounded and
+                // retains persona weighting while steepening near depletion.
+                base + base * deficits[i] * HUNGER_CURVE / NEED_ONE as i32
+            } else {
+                base
+            }
+        };
         let max_pressure = (0..N_STATS).map(pressure).max().unwrap_or(0);
 
         // Friendliest neighbor overall (for follow, which travels to reach one),
