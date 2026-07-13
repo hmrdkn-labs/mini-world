@@ -6,3 +6,7 @@ publish.workspace = true
 
 [dependencies]
 mw-core.workspace = true
+# Blocking HTTP client: no async runtime pulled in, and TLS disabled since the
+# managed llama-server only ever listens on loopback plain HTTP.
+ureq = { version = "2", default-features = false, features = ["json"] }
+serde_json = "1"

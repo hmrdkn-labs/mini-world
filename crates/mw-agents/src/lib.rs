@@ -3,6 +3,8 @@
 //! Home of the [`SoulPolicy`] implementations: the v0 utility-AI scorer, later
 //! the distilled tiny net. Both sit behind the same contract. No behavior yet.
 
+pub mod memory;
+
 use mw_core::{AgentRng, Intent, Observation, SoulPolicy};
 
 /// v0 hand-written utility-AI scorer (DESIGN.md §5 training roadmap).
