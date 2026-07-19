@@ -4,7 +4,13 @@ import json
 from pathlib import Path
 
 from mw_training.omni import OmniDataset
-from mw_training.spark_dataset import assemble_labels, build_teacher_prompt, summarize_states, write_prompts
+from mw_training.spark_dataset import (
+    assemble_labels,
+    build_teacher_prompt,
+    collect_states,
+    summarize_states,
+    write_prompts,
+)
 
 
 def state(seed: int = 4) -> dict:
@@ -96,3 +102,28 @@ def test_prompt_metadata_and_distribution_report(tmp_path: Path):
     assert summary["locations"]["home"] == 1
     assert summary["locations"]["bakery"] == 1
     assert summary["threat_presence"]["present"] == 2
+
+def test_collect_uses_even_stress_profile_mix(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_export(root, seed, agents, ticks, out, *, profile="healthy", fraction=25):
+        calls.append((profile, fraction))
+        rows = [state(seed + index) for index in range(agents * 2)]
+        out.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr("mw_training.spark_dataset._run_export", fake_export)
+    output = tmp_path / "states.jsonl"
+    report = collect_states(output, states=8, agents=2, ticks_per_seed=2)
+    assert len(output.read_text().splitlines()) == 8
+    assert calls == [
+        ("healthy", 25),
+        ("scarcity", 25),
+        ("hostile", 50),
+        ("exhausted", 25),
+    ]
+    assert report["profiles"] == {
+        "healthy": 2,
+        "scarcity": 2,
+        "hostile": 2,
+        "exhausted": 2,
+    }

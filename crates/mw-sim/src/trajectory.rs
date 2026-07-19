@@ -11,6 +11,44 @@ use std::io::{BufWriter, Write};
 use std::rc::Rc;
 
 pub const SCHEMA_VERSION: u32 = 2;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportProfile {
+    Healthy,
+    Scarcity,
+    Hostile,
+    Exhausted,
+}
+
+impl ExportProfile {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Healthy => "healthy",
+            Self::Scarcity => "scarcity",
+            Self::Hostile => "hostile",
+            Self::Exhausted => "exhausted",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TrajectoryExportConfig {
+    pub habits: bool,
+    pub include_replays: bool,
+    pub profile: ExportProfile,
+    pub fraction: u8,
+}
+
+impl Default for TrajectoryExportConfig {
+    fn default() -> Self {
+        Self {
+            habits: true,
+            include_replays: false,
+            profile: ExportProfile::Healthy,
+            fraction: 25,
+        }
+    }
+}
 pub const OUTCOME_WINDOW: u64 = 8;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PersonaRecord {
@@ -305,6 +343,67 @@ fn tool_id(r: &TrajectoryRecord) -> usize {
         _ => 0,
     }
 }
+fn seed_profile(
+    pack: &VillagePack,
+    ids: &[EntityId],
+    seed: u64,
+    profile: ExportProfile,
+    fraction: u8,
+) {
+    let fraction = fraction.min(100) as u64;
+    match profile {
+        ExportProfile::Healthy | ExportProfile::Hostile => {}
+        ExportProfile::Scarcity => {
+            for (slot, &id) in ids.iter().enumerate() {
+                let jitter = seed
+                    .wrapping_add(slot as u64 * 0x9e37_79b9)
+                    .rotate_left((slot % 31) as u32)
+                    % 380;
+                pack.seed_needs(id, [120 + jitter as i32, 700, 650]);
+            }
+        }
+        ExportProfile::Exhausted => {
+            let cohort = if fraction == 0 {
+                0
+            } else {
+                ((ids.len() as u64 * fraction).saturating_add(99) / 100) as usize
+            };
+            for (slot, &id) in ids.iter().take(cohort).enumerate() {
+                let jitter = seed.wrapping_add(slot as u64 * 0x517c_c1b7) % 260;
+                pack.seed_needs(id, [700, 80 + jitter as i32, 650]);
+            }
+        }
+    }
+}
+
+fn seed_hostility(soul: &mut ExportSoul, ids: &[EntityId], fraction: u8) {
+    let fraction = fraction.min(100) as usize;
+    let pair_count = if fraction == 0 {
+        0
+    } else {
+        ((ids.len() / 2) * fraction).div_ceil(100)
+    };
+    let mut events = Vec::with_capacity(pair_count * 2);
+    for pair in 0..pair_count.min(ids.len() / 2) {
+        let a = ids[pair * 2];
+        let b = ids[pair * 2 + 1];
+        events.push(Event::Spoke {
+            tick: 0,
+            actor: a,
+            target: b,
+            act: 5,
+            topic: 0,
+        });
+        events.push(Event::Spoke {
+            tick: 0,
+            actor: b,
+            target: a,
+            act: 5,
+            topic: 0,
+        });
+    }
+    soul.observe_events(&events);
+}
 
 pub fn export_trajectories(
     seed: u64,
@@ -314,12 +413,44 @@ pub fn export_trajectories(
     habits: bool,
     include_replays: bool,
 ) -> std::io::Result<ExportStats> {
+    export_trajectories_profile(
+        seed,
+        agents,
+        ticks,
+        out,
+        TrajectoryExportConfig {
+            habits,
+            include_replays,
+            profile: ExportProfile::Healthy,
+            fraction: 25,
+        },
+    )
+}
+
+pub fn export_trajectories_profile(
+    seed: u64,
+    agents: i32,
+    ticks: u64,
+    out: &str,
+    config: TrajectoryExportConfig,
+) -> std::io::Result<ExportStats> {
+    let TrajectoryExportConfig {
+        habits,
+        include_replays,
+        profile,
+        fraction,
+    } = config;
+    let agents = agents.max(1);
     let pack = Rc::new(VillagePack::new());
     let mut world = World::with_pack(seed, &*pack);
     let positions = crate::soak::start_positions(agents);
     let ids: Vec<_> = positions.iter().map(|&p| world.spawn(p)).collect();
+    seed_profile(&pack, &ids, seed, profile, fraction);
     let personas: Vec<_> = ids.iter().map(|&id| Persona::new(seed, id)).collect();
     let mut soul = make_policy(Rc::clone(&pack), &ids, &personas, &positions, habits);
+    if profile == ExportProfile::Hostile {
+        seed_hostility(&mut soul, &ids, fraction);
+    }
     let file = File::create(out)?;
     let mut w = HashWriter::new(BufWriter::new(file));
     let mut pending = VecDeque::new();
@@ -512,6 +643,87 @@ mod tests {
             serde_json::from_str(fs::read_to_string(&p).unwrap().lines().next().unwrap()).unwrap();
         assert_eq!(first.outcome.need_deltas, [-16, -8, -24]);
         let _ = fs::remove_file(p);
+    }
+    #[test]
+    fn stress_profiles_seed_expected_observations() {
+        let scarcity = std::env::temp_dir().join("mw-scarcity.jsonl");
+        export_trajectories_profile(
+            41,
+            8,
+            2,
+            scarcity.to_str().unwrap(),
+            TrajectoryExportConfig {
+                habits: false,
+                include_replays: false,
+                profile: ExportProfile::Scarcity,
+                fraction: 25,
+            },
+        )
+        .unwrap();
+        let first: TrajectoryRecord = serde_json::from_str(
+            fs::read_to_string(&scarcity)
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(first.obs.self_stats.iter().any(|&v| v < 500));
+        let _ = fs::remove_file(scarcity);
+
+        let hostile = std::env::temp_dir().join("mw-hostile.jsonl");
+        export_trajectories_profile(
+            41,
+            8,
+            2,
+            hostile.to_str().unwrap(),
+            TrajectoryExportConfig {
+                habits: false,
+                include_replays: false,
+                profile: ExportProfile::Hostile,
+                fraction: 100,
+            },
+        )
+        .unwrap();
+        let hostile_first: TrajectoryRecord = serde_json::from_str(
+            fs::read_to_string(&hostile)
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(hostile_first
+            .obs
+            .neighbors
+            .iter()
+            .any(|n| n.present && n.opinion < 0));
+        let _ = fs::remove_file(hostile);
+
+        let exhausted = std::env::temp_dir().join("mw-exhausted.jsonl");
+        export_trajectories_profile(
+            41,
+            8,
+            2,
+            exhausted.to_str().unwrap(),
+            TrajectoryExportConfig {
+                habits: false,
+                include_replays: false,
+                profile: ExportProfile::Exhausted,
+                fraction: 50,
+            },
+        )
+        .unwrap();
+        let exhausted_first: TrajectoryRecord = serde_json::from_str(
+            fs::read_to_string(&exhausted)
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(exhausted_first.obs.self_stats[1] < 500);
+        let _ = fs::remove_file(exhausted);
     }
 }
 

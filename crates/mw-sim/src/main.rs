@@ -19,6 +19,25 @@ enum HabitsFlag {
     Off,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum TrajectoryProfile {
+    Healthy,
+    Scarcity,
+    Hostile,
+    Exhausted,
+}
+
+impl From<TrajectoryProfile> for mw_sim::trajectory::ExportProfile {
+    fn from(profile: TrajectoryProfile) -> Self {
+        match profile {
+            TrajectoryProfile::Healthy => Self::Healthy,
+            TrajectoryProfile::Scarcity => Self::Scarcity,
+            TrajectoryProfile::Hostile => Self::Hostile,
+            TrajectoryProfile::Exhausted => Self::Exhausted,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum PolicyFlag {
     Utility,
@@ -44,7 +63,6 @@ enum Command {
         #[arg(long, default_value_t = 1)]
         seed: u64,
     },
-    /// Export one JSONL trajectory record per scored SOUL decision.
     Trajectories {
         #[arg(long)]
         seed: u64,
@@ -58,6 +76,20 @@ enum Command {
         habits: HabitsFlag,
         #[arg(long)]
         include_replays: bool,
+        #[arg(long, value_enum, default_value_t = TrajectoryProfile::Healthy)]
+        profile: TrajectoryProfile,
+        /// Percentage of agent pairs/cohort members to stress for hostile/exhausted profiles.
+        #[arg(long, default_value_t = 25, value_parser = clap::value_parser!(u8).range(0..=100))]
+        fraction: u8,
+        /// Shortcut for `--profile scarcity`.
+        #[arg(long, conflicts_with = "profile")]
+        scarcity: bool,
+        /// Shortcut for `--profile hostile`.
+        #[arg(long, conflicts_with = "profile")]
+        hostile: bool,
+        /// Shortcut for `--profile exhausted`.
+        #[arg(long, conflicts_with = "profile")]
+        exhausted: bool,
     },
     /// Village social-sim soak with the utility or neural SOUL.
     Soak {
@@ -275,13 +307,16 @@ fn run_trajectories(
     agents: i32,
     ticks: u64,
     out: &str,
-    habits: bool,
-    include_replays: bool,
+    config: mw_sim::trajectory::TrajectoryExportConfig,
 ) {
-    match mw_sim::trajectory::export_trajectories(seed, agents, ticks, out, habits, include_replays)
-    {
+    match mw_sim::trajectory::export_trajectories_profile(seed, agents, ticks, out, config) {
         Ok(stats) => {
-            println!("trajectories seed={seed} agents={agents} ticks={ticks} habits={habits} include_replays={include_replays}");
+            println!(
+                "trajectories seed={seed} agents={agents} ticks={ticks} habits={} include_replays={} profile={}",
+                config.habits,
+                config.include_replays,
+                config.profile.as_str()
+            );
             println!(
                 "records={} bytes={} hash={:#018x} final_hash={:#018x}",
                 stats.records, stats.bytes, stats.hash, stats.final_hash
@@ -412,14 +447,34 @@ fn main() {
             out,
             habits,
             include_replays,
-        } => run_trajectories(
-            seed,
-            agents,
-            ticks,
-            &out,
-            matches!(habits, HabitsFlag::On),
-            include_replays,
-        ),
+            profile,
+            fraction,
+            scarcity,
+            hostile,
+            exhausted,
+        } => {
+            let profile = if scarcity {
+                TrajectoryProfile::Scarcity
+            } else if hostile {
+                TrajectoryProfile::Hostile
+            } else if exhausted {
+                TrajectoryProfile::Exhausted
+            } else {
+                profile
+            };
+            run_trajectories(
+                seed,
+                agents,
+                ticks,
+                &out,
+                mw_sim::trajectory::TrajectoryExportConfig {
+                    habits: matches!(habits, HabitsFlag::On),
+                    include_replays,
+                    profile: profile.into(),
+                    fraction,
+                },
+            )
+        }
         Command::Ff { days, agents, seed } => run_ff(days, agents, seed),
         Command::View {
             smoke,

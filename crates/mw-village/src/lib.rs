@@ -78,6 +78,19 @@ impl VillagePack {
         st.ensure(entity.index() as usize);
         st.needs[entity.index() as usize]
     }
+    /// Seed deterministic initial needs for scenario stress-start collection.
+    pub fn seed_needs(&self, entity: EntityId, values: [i32; 3]) {
+        let mut st = self.state.borrow_mut();
+        st.ensure(entity.index() as usize);
+        let n = &mut st.needs[entity.index() as usize];
+        *n = Needs::full();
+        n.adjust(
+            0,
+            values[0] - MAX_NEED,
+            values[1] - MAX_NEED,
+            values[2] - MAX_NEED,
+        );
+    }
 
     /// Inventory count of `item` for an entity.
     pub fn inventory(&self, entity: EntityId, item: Item) -> u8 {

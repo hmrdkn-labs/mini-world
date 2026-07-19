@@ -106,7 +106,16 @@ def summarize_states(records: Iterable[Mapping]) -> dict[str, object]:
     }
 
 
-def _run_export(repo_root: Path, seed: int, agents: int, ticks: int, out: Path) -> None:
+def _run_export(
+    repo_root: Path,
+    seed: int,
+    agents: int,
+    ticks: int,
+    out: Path,
+    *,
+    profile: str = "healthy",
+    fraction: int = 25,
+) -> None:
     # CI and local development normally use cargo; MW_SIM_BIN permits a
     # prebuilt simulator when dependencies are being rebuilt concurrently.
     binary = os.environ.get("MW_SIM_BIN")
@@ -126,8 +135,29 @@ def _run_export(repo_root: Path, seed: int, agents: int, ticks: int, out: Path) 
         str(out),
         "--habits",
         "off",
+        "--profile",
+        profile,
+        "--fraction",
+        str(fraction),
     ]
     subprocess.run(command, cwd=repo_root, check=True)
+
+
+def _sample_profile(exported: list[dict], count: int, profile: str, agents: int) -> list[dict]:
+    if len(exported) <= count:
+        return exported
+    if profile != "healthy":
+        # Stress is intentionally visible at the start. Keep the first few
+        # ticks while still spreading across every starting agent.
+        horizon = min(len(exported), max(count, agents * 8))
+        exported = exported[:horizon]
+    if count == 1:
+        return [exported[0]]
+    indexes = [
+        round(i * (len(exported) - 1) / (count - 1))
+        for i in range(count)
+    ]
+    return [exported[index] for index in indexes]
 
 
 def collect_states(
@@ -139,42 +169,49 @@ def collect_states(
     ticks_per_seed: int = 300,
     repo_root: str | Path | None = None,
 ) -> dict[str, object]:
-    """Drive the real simulator export until at least ``states`` rows exist."""
+    """Collect an even mix of healthy and deterministic stress-start states."""
     if states < 1 or agents < 1 or ticks_per_seed < 1:
         raise ValueError("states, agents, and ticks_per_seed must be positive")
     root = Path(repo_root) if repo_root is not None else Path(__file__).resolve().parents[2]
     destination = Path(output)
     destination.parent.mkdir(parents=True, exist_ok=True)
+    profiles = ("healthy", "scarcity", "hostile", "exhausted")
+    base, remainder = divmod(states, len(profiles))
+    quotas = [base + (index < remainder) for index in range(len(profiles))]
     rows: list[dict] = []
+    profile_counts: dict[str, int] = {}
     with tempfile.TemporaryDirectory(prefix="mw-spark-") as temporary:
-        run = 0
-        while len(rows) < states:
-            run_seed = seed + run * 7919
-            remaining = states - len(rows)
-            # Export a long horizon, then take a deterministic evenly spaced
-            # sample. Taking only the first rows would capture the first few
-            # ticks and miss need/location transitions.
-            ticks = ticks_per_seed
-            path = Path(temporary) / f"trajectory-{run}.jsonl"
-            _run_export(root, run_seed, agents, ticks, path)
-            with path.open(encoding="utf-8") as stream:
-                exported = [json.loads(line) for line in stream if line.strip()]
-            if len(exported) <= remaining:
-                rows.extend(exported)
-            elif remaining == 1:
-                rows.append(exported[0])
-            else:
-                indexes = [
-                    round(i * (len(exported) - 1) / (remaining - 1))
-                    for i in range(remaining)
-                ]
-                rows.extend(exported[index] for index in indexes)
-            run += 1
+        for profile_index, (profile, quota) in enumerate(zip(profiles, quotas)):
+            selected: list[dict] = []
+            run = 0
+            while len(selected) < quota:
+                run_seed = seed + profile_index * 1_000_003 + run * 7919
+                path = Path(temporary) / f"trajectory-{profile}-{run}.jsonl"
+                profile_fraction = 50 if profile == "hostile" else 25
+                _run_export(
+                    root,
+                    run_seed,
+                    agents,
+                    ticks_per_seed,
+                    path,
+                    profile=profile,
+                    fraction=profile_fraction,
+                )
+                with path.open(encoding="utf-8") as stream:
+                    exported = [json.loads(line) for line in stream if line.strip()]
+                if not exported:
+                    raise RuntimeError(f"simulator exported no records for {profile}")
+                need = quota - len(selected)
+                selected.extend(_sample_profile(exported, need, profile, agents))
+                run += 1
+            rows.extend(selected[:quota])
+            profile_counts[profile] = quota
     with destination.open("w", encoding="utf-8") as stream:
         for record in rows:
             stream.write(json.dumps(record, separators=(",", ":")) + "\n")
     report = summarize_states(rows)
     report["seeds"] = len({int(r["seed"]) for r in rows})
+    report["profiles"] = profile_counts
     return report
 
 
@@ -371,6 +408,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     collect.add_argument("--agents", type=int, default=50)
     collect.add_argument("--seed", type=int, default=1)
     collect.add_argument("--ticks-per-seed", type=int, default=300)
+    collect.add_argument("--prompts-out", default="training/artifacts/spark_prompts.jsonl")
     prompts = sub.add_parser("prompts")
     prompts.add_argument("--states", default="training/artifacts/spark_states.jsonl")
     prompts.add_argument("--out", default="training/artifacts/spark_prompts.jsonl")
@@ -392,6 +430,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             seed=args.seed,
             ticks_per_seed=args.ticks_per_seed,
         )
+        report["prompts"] = write_prompts(args.out, args.prompts_out)
     elif args.command == "prompts":
         report = write_prompts(args.states, args.out)
     elif args.command == "label":
