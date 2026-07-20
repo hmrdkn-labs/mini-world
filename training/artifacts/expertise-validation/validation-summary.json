@@ -1,0 +1,248 @@
+{
+  "experiment": "mw-v1-s21-expertise-validation",
+  "preregistration_sha256": "97f056f6113149ece76a391da2bd1e66d8f83f811082ff5b916119905937bdc5",
+  "dataset_sha256": "7594fec171f94dba9f40328c7416041fb508ecd8bdf3eaf7ffefdb4eefcf473b",
+  "model_width": 296,
+  "model_seeds": [
+    20260719,
+    20260720,
+    20260721
+  ],
+  "behavior_runs": 72,
+  "held_out_seeds": [
+    101,
+    211,
+    307,
+    401,
+    503,
+    601,
+    701,
+    809
+  ],
+  "ci_method": "paired across-seed mean; sample SD; normal 95% CI z=1.96",
+  "low_label_separability": {
+    "strictly_separable_states": 3,
+    "matched_groups": 1000,
+    "strictly_separable_rate": 0.003,
+    "interpretation": "limitation recorded; no post-result compensation"
+  },
+  "per_model": [
+    {
+      "model_seed": 20260719,
+      "decision": "validated",
+      "balanced_means": {
+        "novice": 995,
+        "capable": 995.25,
+        "expert": 996.484375
+      },
+      "balanced_adjacent_ci": {
+        "capable_minus_novice": [
+          0.25,
+          0.05909753799387504,
+          0.44090246200612493
+        ],
+        "expert_minus_capable": [
+          1.234375,
+          1.0524570497449468,
+          1.4162929502550532
+        ],
+        "expert_minus_novice": [
+          1.484375,
+          1.45375,
+          1.515
+        ]
+      },
+      "outcome_means": {
+        "deaths": [
+          0,
+          0,
+          0
+        ],
+        "survival_rate": [
+          1,
+          1,
+          1
+        ],
+        "hunger": [
+          995,
+          995,
+          995
+        ],
+        "energy": [
+          997.5,
+          997.5,
+          997.5
+        ],
+        "social": [
+          992.5,
+          993.25,
+          996.953125
+        ],
+        "resource_actions": [
+          0,
+          0,
+          0
+        ]
+      },
+      "action_histogram_means_by_level": {
+        "novice": {
+          "follow": 8
+        },
+        "capable": {
+          "speak": 1.125,
+          "follow": 6.875
+        },
+        "expert": {
+          "speak": 7.75,
+          "follow": 0.25
+        }
+      }
+    },
+    {
+      "model_seed": 20260720,
+      "decision": "validated",
+      "balanced_means": {
+        "novice": 995,
+        "capable": 996.2447916666666,
+        "expert": 996.5
+      },
+      "balanced_adjacent_ci": {
+        "capable_minus_novice": [
+          1.2447916666666572,
+          1.0295849467630536,
+          1.4599983865702608
+        ],
+        "expert_minus_capable": [
+          0.2552083333333428,
+          0.04000161342973915,
+          0.47041505323694643
+        ],
+        "expert_minus_novice": [
+          1.5,
+          1.5,
+          1.5
+        ]
+      },
+      "outcome_means": {
+        "deaths": [
+          0,
+          0,
+          0
+        ],
+        "survival_rate": [
+          1,
+          1,
+          1
+        ],
+        "hunger": [
+          995,
+          995,
+          995
+        ],
+        "energy": [
+          997.5,
+          997.671875,
+          997.5
+        ],
+        "social": [
+          992.5,
+          996.0625,
+          997
+        ],
+        "resource_actions": [
+          0,
+          0,
+          0
+        ]
+      },
+      "action_histogram_means_by_level": {
+        "novice": {
+          "speak": 0.125,
+          "follow": 7.875
+        },
+        "capable": {
+          "sleep": 0.375,
+          "speak": 5.375,
+          "follow": 2.25
+        },
+        "expert": {
+          "speak": 7.375,
+          "follow": 0.625
+        }
+      }
+    },
+    {
+      "model_seed": 20260721,
+      "decision": "validated",
+      "balanced_means": {
+        "novice": 995,
+        "capable": 995.6145833333333,
+        "expert": 996.4375
+      },
+      "balanced_adjacent_ci": {
+        "capable_minus_novice": [
+          0.6145833333333428,
+          0.34295724996381516,
+          0.8862094167028705
+        ],
+        "expert_minus_capable": [
+          0.8229166666666572,
+          0.6069848197797233,
+          1.038848513553591
+        ],
+        "expert_minus_novice": [
+          1.4375,
+          1.315,
+          1.56
+        ]
+      },
+      "outcome_means": {
+        "deaths": [
+          0,
+          0,
+          0
+        ],
+        "survival_rate": [
+          1,
+          1,
+          1
+        ],
+        "hunger": [
+          995,
+          995,
+          995
+        ],
+        "energy": [
+          997.5,
+          998.03125,
+          997.59375
+        ],
+        "social": [
+          992.5,
+          993.8125,
+          996.71875
+        ],
+        "resource_actions": [
+          0,
+          0,
+          0
+        ]
+      },
+      "action_histogram_means_by_level": {
+        "novice": {
+          "follow": 8
+        },
+        "capable": {
+          "sleep": 1.75,
+          "speak": 1.75,
+          "follow": 4.5
+        },
+        "expert": {
+          "sleep": 0.375,
+          "speak": 7.625
+        }
+      }
+    }
+  ],
+  "mechanical_verdict": "validated: all three independent checkpoints pass every preregistered rule; low label separability remains disclosed"
+}

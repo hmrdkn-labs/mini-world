@@ -36,8 +36,8 @@ def _seed(seed: int) -> None:
 
 
 def _step(model: OmniPolicy, batch, device: torch.device) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    obs, descriptors, afforded, tool, target, params = (x.to(device) for x in batch)
-    scores, target_logits, param_values = model(obs, descriptors, afforded)
+    obs, descriptors, afforded, expertise, tool, target, params = (x.to(device) for x in batch)
+    scores, target_logits, param_values = model(obs, descriptors, afforded, expertise)
     tool_loss = nn.functional.cross_entropy(scores, tool)
     target_rows = target != IGNORE_INDEX
     target_loss = (
@@ -64,12 +64,19 @@ def _evaluate(model: OmniPolicy, data: OmniDataset, device: torch.device, batch_
 
 def train_omni(
     train_data: OmniDataset,
-    heldout_data: OmniDataset | None = None,
+    val_data: OmniDataset | None = None,
+    test_data: OmniDataset | None = None,
     config: OmniTrainConfig | None = None,
     *,
     device: torch.device | None = None,
 ) -> tuple[OmniPolicy, dict]:
-    """Fit OMNI and return the best held-out tool-match checkpoint plus history."""
+    """Fit OMNI, selecting the checkpoint on validation only.
+
+    ``test_data`` is evaluated exactly once after the validation-selected
+    checkpoint is restored.  When no validation set is supplied (the standalone
+    fixture CLI), training is used as a deterministic fallback; this keeps the
+    small fixture useful without making test data part of model selection.
+    """
     config = config or OmniTrainConfig()
     _seed(config.seed)
     device = device or torch.device("cpu")
@@ -83,7 +90,7 @@ def train_omni(
     # Keep loss weights on the module for the small _step helper; they are not exported.
     model.target_weight = config.target_weight
     model.param_weight = config.param_weight
-    heldout_data = heldout_data or train_data
+    val_data = train_data if val_data is None else val_data
     loader = DataLoader(
         train_data,
         batch_size=config.batch_size,
@@ -107,24 +114,24 @@ def train_omni(
             loss.backward()
             optimizer.step()
         train_metrics = _evaluate(model, train_data, device, config.batch_size)
-        heldout_metrics = _evaluate(model, heldout_data, device, config.batch_size)
+        val_metrics = _evaluate(model, val_data, device, config.batch_size)
         row = {
             "epoch": epoch,
             "train_loss": train_metrics["loss"],
-            "heldout_loss": heldout_metrics["loss"],
+            "val_loss": val_metrics["loss"],
             "train_match": train_metrics["match_rate"],
-            "heldout_match": heldout_metrics["match_rate"],
+            "val_match": val_metrics["match_rate"],
         }
         history.append(row)
         print(
             f"epoch={epoch:02d} train_loss={row['train_loss']:.4f} "
-            f"heldout_loss={row['heldout_loss']:.4f} "
+            f"val_loss={row['val_loss']:.4f} "
             f"train_match={row['train_match']:.3f} "
-            f"heldout_match={row['heldout_match']:.3f}",
+            f"val_match={row['val_match']:.3f}",
             flush=True,
         )
-        if row["heldout_match"] > best_score:
-            best_score = row["heldout_match"]
+        if row["val_match"] > best_score:
+            best_score = row["val_match"]
             best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
             stale = 0
         else:
@@ -135,41 +142,54 @@ def train_omni(
         raise RuntimeError("OMNI training produced no checkpoint")
     model.load_state_dict(best_state)
     final_train = _evaluate(model, train_data, device, config.batch_size)
-    final_heldout = _evaluate(model, heldout_data, device, config.batch_size)
+    final_val = _evaluate(model, val_data, device, config.batch_size)
+    final_test = _evaluate(model, test_data, device, config.batch_size) if test_data is not None else None
     metrics = {
         "params": count_parameters(model),
         "device": str(device),
         "train_match_rate": final_train["match_rate"],
-        "heldout_match_rate": final_heldout["match_rate"],
+        "val_match_rate": final_val["match_rate"],
         "train_loss": final_train["loss"],
-        "heldout_loss": final_heldout["loss"],
+        "val_loss": final_val["loss"],
+        "train_count": final_train["count"],
+        "val_count": final_val["count"],
         "history": history,
         "config": asdict(config),
         "descriptor_dim": train_data.tool_descriptors.shape[-1],
         "tool_count": train_data.tool_descriptors.shape[1],
         "param_dim": train_data.params.shape[-1],
         "opset": OPSET_VERSION,
+        "selection_metric": "val_match_rate",
+        "test_evaluated_after_selection": test_data is not None,
     }
+    if final_test is not None:
+        metrics.update({
+            "test_match_rate": final_test["match_rate"],
+            "test_loss": final_test["loss"],
+            "test_count": final_test["count"],
+        })
     return model.cpu(), metrics
 
 
 def export_omni_onnx(model: OmniPolicy, path: str | Path) -> None:
-    """Export dynamic batch/tool-count OMNI graph with the stable I/O contract."""
+    """Export dynamic OMNI graph with explicit expertise and tool conditioning."""
     model = model.eval()
     tools = 3
     obs = torch.zeros((1, model.obs_dim), dtype=torch.float32)
     descriptors = torch.zeros((1, tools, model.descriptor_dim), dtype=torch.float32)
     afforded = torch.ones((1, tools), dtype=torch.float32)
+    expertise = torch.tensor([[0.0, 1.0, 0.0]], dtype=torch.float32)
     torch.onnx.export(
         model,
-        (obs, descriptors, afforded),
+        (obs, descriptors, afforded, expertise),
         str(path),
-        input_names=["obs", "tool_descriptors", "afforded"],
+        input_names=["obs", "tool_descriptors", "afforded", "expertise"],
         output_names=["tool_scores", "target_logits", "params"],
         dynamic_axes={
             "obs": {0: "batch"},
             "tool_descriptors": {0: "batch", 1: "tools"},
             "afforded": {0: "batch", 1: "tools"},
+            "expertise": {0: "batch"},
             "tool_scores": {0: "batch", 1: "tools"},
             "target_logits": {0: "batch"},
             "params": {0: "batch"},
@@ -190,7 +210,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     model, metrics = train_omni(data, config=OmniTrainConfig(epochs=args.epochs, hidden_dim=args.hidden_dim))
     export_omni_onnx(model, args.out)
     Path(args.out).with_suffix(".metrics.json").write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
-    print(f"params={metrics['params']} heldout_match={metrics['heldout_match_rate']:.3%} artifact={args.out}")
+    print(f"params={metrics['params']} val_match={metrics['val_match_rate']:.3%} artifact={args.out}")
 
 
 if __name__ == "__main__":

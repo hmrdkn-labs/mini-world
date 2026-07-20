@@ -1,0 +1,60 @@
+{
+  "experiment": "mw-v1-s21-expertise-validation",
+  "status": "preregistered_before_training_and_behavior",
+  "dataset": {
+    "records": "training/artifacts/spark_matched_expertise.jsonl",
+    "records_sha256": "7594fec171f94dba9f40328c7416041fb508ecd8bdf3eaf7ffefdb4eefcf473b",
+    "manifest": "training/artifacts/spark_matched_expertise.manifest.json",
+    "manifest_sha256": "8bfa936776091d7b59c20346c429d7b2de4a6ff22237fe4f409cf4f9a90d4746",
+    "records_expected": 3000,
+    "matched_groups_expected": 1000,
+    "levels": ["novice", "capable", "expert"],
+    "records_per_group": 3,
+    "group_key": "matched_group_id (fallback expertise.group_id/group_id/source_state_id)",
+    "source_artifact_sha256": "6ebb5ebec99c9e1d23bb041bdca6f6d50e66770bb22f72dc70e7729a168e7ae7"
+  },
+  "split": {
+    "seed": 20260719,
+    "ratios": {"train": 0.70, "val": 0.15, "test": 0.15},
+    "unit": "matched_group",
+    "triplets_must_remain_together": true,
+    "normalization_fit_partition": "train",
+    "selection_partition": "val",
+    "test_evaluation": "once_after_validation_selection"
+  },
+  "model": {
+    "architecture": "OmniPolicy",
+    "hidden_dim": 296,
+    "width_selection": "smallest corrected reference width",
+    "seeds": [20260719, 20260720, 20260721],
+    "epochs": 24,
+    "batch_size": 64,
+    "learning_rate": 0.002,
+    "weight_decay": 0.0001,
+    "patience": 8,
+    "target_weight": 0.1,
+    "param_weight": 0.05,
+    "manifest": "TOOL_NAMES"
+  },
+  "behavior": {
+    "simulator": "release Rust mw-sim",
+    "levels": ["novice", "capable", "expert"],
+    "held_out_seeds": [101, 211, 307, 401, 503, 601, 701, 809],
+    "identical_worlds_per_level": true,
+    "agents": 2,
+    "ticks": 4,
+    "metrics": ["deaths", "survival", "hunger", "energy", "social", "resources", "action_histogram", "balanced_outcome_composite"],
+    "ci_method": "paired across held-out seeds; sample standard deviation; normal approximation 95% CI with z=1.96",
+    "paired_composite": "mean of hunger, energy, and social simulator outcomes; higher is better"
+  },
+  "pass_rule": {
+    "ordered_axis": "expert > capable > novice on paired balanced outcome composite",
+    "adjacent_mean_differences_positive": true,
+    "adjacent_ci_lower_bounds_positive": true,
+    "expert_vs_novice_balanced_mean_improvement_min": 0.5,
+    "expert_vs_novice_deaths_non_inferior": "fixed promotion non-inferiority rule",
+    "expert_vs_novice_survival_non_inferior": "fixed promotion non-inferiority rule",
+    "expert_vs_novice_hunger_non_inferior": "fixed promotion non-inferiority rule",
+    "failure_verdict": "expertise axis rejected/blocked; never relabel as validated"
+  }
+}

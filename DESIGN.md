@@ -102,7 +102,39 @@ Feasibility evidence:
 
 Training roadmap:
 - **v0**: hand-written utility-AI scorer behind the same interface (zero ML; ships the game loop).
-- **v1**: distill an LLM playing characters. Recipe validated by NeurIPS 2025 agent distillation ([arXiv:2505.17612](https://arxiv.org/abs/2505.17612)): ~2,000 filtered teacher trajectories + LoRA + self-consistent action sampling let a 0.5B student beat a 3× larger CoT baseline. Add SOD-style divergence weighting to avoid error cascades ([arXiv:2605.07725](https://arxiv.org/abs/2605.07725)). Intermediate abstract-action tokens per OpenHA ([arXiv:2509.13347](https://arxiv.org/abs/2509.13347)).
+- **Original v1 roadmap (historical design target):** distill an LLM playing characters. The corrected v1 evidence below uses Spark grounding and an OMNI manifest-conditioned policy; the original recipe remains a future research option, not a reported result.
+### Pilot evidence: 1K Spark-labeled OMNI ladder (pipeline validation only)
+
+The first trained OMNI run is evidence that the Spark-label → dataset → training → ONNX → release-runtime path can execute. It is **not** a capacity result and must not be used to rank the smallest tier or claim a scaling curve. The run used 1,000 records (800 train / 200 heldout by `index % 5` record stride) and seven widths; the corresponding seeds were `20260715, 20260716, 20260717, 20260718, 20260719, 20260720, 20260721`:
+
+| Tier | Parameters | Train match | Heldout match |
+|---|---:|---:|---:|
+| tier-0 | 311,997 | 0.9225 | 0.725 |
+| tier-1 | 676,493 | 0.90625 | 0.695 |
+| tier-2 | 1,335,053 | 0.9075 | 0.690 |
+| tier-3 | 2,557,197 | 0.9125 | 0.705 |
+| tier-4 | 5,127,693 | 0.82125 | 0.685 |
+| tier-5 | 9,931,277 | 0.86875 | 0.690 |
+| tier-6 | 20,085,773 | 0.8900 | 0.680 |
+
+The tail probe used 8,448 rows × 33 dimensions. For tiers 0–6 respectively, tail heldout match was `0.625, 0.59375, 0.6171875, 0.625, 0.5859375, 0.5859375, 0.59375`; after clamping observations it was `0.640625, 0.59375, 0.625, 0.640625, 0.609375, 0.5859375, 0.6171875`. Clamp-changed fractions were `0.046875, 0.0078125, 0.015625, 0.0234375, 0.0390625, 0.015625, 0.0390625`; raw tail-feature fraction was `0.00429990328848362` for every tier. The +4/−4 tail match pairs were, in order: `(0.6053503751754761, 0.6048768758773804)`, `(0.5707859992980957, 0.5705492496490479)`, `(0.6060606241226196, 0.5984848737716675)`, `(0.6053503751754761, 0.6032196879386902)`, `(0.5901988744735718, 0.578125)`, `(0.5828598737716675, 0.5854640007019043)`, `(0.5802556872367859, 0.5686553120613098)`.
+
+These numbers are diagnostic action-match measurements only. The heldout set has n=200, p≈0.7, and an approximate 95% binomial interval of ±6.4 percentage points; the observed 4.5-point tier spread is therefore within this noise. Width is confounded with seed, the record-stride split can leak autocorrelated states from the same trajectories, normalization was fit over train and heldout, the reported heldout checkpoint was selected on that same heldout set, and there is no independent test set. The labels are also imbalanced: Speak is 564/1,000 records. The defensible conclusion is data-limited/proxy-saturated pipeline validation, not capacity limitation or a smallest-tier ranking.
+
+The release A/B smoke was run with `target/release/mw-sim soak --policy omni-both --ticks 20 --agents 4 --seed 7 --onnx-path training/artifacts/ladder/tier-0/model.onnx --habits off` (8.75 s). UtilitySoul produced deaths=0, hunger=979, energy=990, social=968, hash `0x674bce3b4ca910f9`, idle=80; OmniSoul produced deaths=0, hunger=979, energy=997, social=984, hash `0x94505170865734c8`, sleep=52/speak=28. Deltas (OmniSoul−UtilitySoul) were deaths=0, hunger=+0.0, energy=+7.7, social=+15.1. This establishes release loading/execution and same-initial-state comparison, not policy quality or capacity. Release determinism passed for 8 agents × 40 ticks in 76 s; the corresponding debug run exceeded 3,600 s, so debug performance and any throughput claim remain unresolved.
+
+That historical next sequence was subsequently executed as the corrected v1 protocol below. The pilot remains invalid evidence: it must not be used to rank widths, claim scaling, or claim capacity.
+### Corrected v1 evidence and promotion contract
+
+The corrected 1K reference contains 1,000 Spark-grounded records partitioned by whole `(world_seed, trajectory)` groups: 500 train rows over 2 groups, 250 validation rows over 1 group, and 250 untouched test rows over 1 group. Normalization is fit on train only; validation selects the checkpoint; test is evaluated once after selection. The smallest corrected reference width is 296 hidden units (311,997 parameters), trained with independent model seeds `20260715`, `20260716`, and `20260717`. Test action match is `0.884` for all three seeds. Canonical evidence is `training/artifacts/corrected-reference-1k/aggregate.json`, with corrected validation summary hash `d5f3d6a85002e2ef6b6b8a92a93077eba2a71382556f38cdbaa63ff7d57562dc`.
+
+Scaling from 5K through 100K was **SKIPPED** at the 1K promotion stop gate; it was not executed. The full seven-tier capacity ladder is also **SKIPPED**: there is no valid cross-width evidence and therefore no capacity claim. The historical pilot's 4.5 percentage-point spread lies within its approximate ±6.4-point uncertainty and is confounded by width/seed and leakage; it is retained only as explicitly invalid pipeline history.
+
+OMNI expertise is an explicit three-way one-hot contract (`novice`, `capable`, `expert`) spanning Python encoding/training, ONNX inputs, and Rust release inference. Legacy three-input ONNX graphs deliberately use `capable` as their default. Matched expertise data contain 3,000 records from 1,000 matched states (one triplet per state), but only 3/1,000 states are strictly triplet-separable; this degeneracy is a prominent limitation, not a post-result correction.
+
+Despite that label limitation, three independently seeded expertise checkpoints passed the preregistered paired simulator separation across 72 release runs. The expert-minus-novice balanced means are `1.484375`, `1.5`, and `1.4375`; the death-rate confidence intervals are computed in rate units (not raw counts). Preregistration hash: `97f056f6113149ece76a391da2bd1e66d8f83f811082ff5b916119905937bdc5`.
+
+Promotion is simulator behavior, not action match alone: the deterministic 8-tick rollout selects legal capable targets, while Spark is a persona-aware candidate generator. These results support the stated v1 contract only; they do not support a capacity, scaling, or generalization claim.
 
 ### 6. TEXT model
 One shared instruct model, Q4, never in the tick loop, priority-queued (player-facing > ambient > AFK digests).

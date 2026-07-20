@@ -27,7 +27,16 @@ import torch
 from torch import nn
 from torch.utils.data import Dataset
 
-from .dataset import FEATURE_DIM, IGNORE_INDEX, N_NEIGHBORS, TOOL_NAMES, compute_norm_stats, encode_record
+from .dataset import (
+    EXPERTISE_DIM,
+    FEATURE_DIM,
+    IGNORE_INDEX,
+    N_NEIGHBORS,
+    TOOL_NAMES,
+    compute_norm_stats,
+    encode_record,
+    record_expertise,
+)
 
 DEFAULT_DESCRIPTOR_DIM = 16
 DEFAULT_PARAM_DIM = 4
@@ -83,7 +92,7 @@ def descriptor_rows(
 
 
 class OmniPolicy(nn.Module):
-    """Observation trunk plus descriptor-conditioned per-tool scoring head."""
+    """Observation, expertise, and descriptor-conditioned per-tool policy."""
 
     def __init__(
         self,
@@ -96,11 +105,15 @@ class OmniPolicy(nn.Module):
         super().__init__()
         self.obs_dim = obs_dim
         self.descriptor_dim = descriptor_dim
+        self.hidden_dim = hidden_dim
         self.target_slots = target_slots
         self.param_dim = param_dim
         self.obs_trunk = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.GELU(),
             nn.Linear(hidden_dim, hidden_dim), nn.GELU(),
+        )
+        self.expertise_trunk = nn.Sequential(
+            nn.Linear(EXPERTISE_DIM, hidden_dim), nn.LayerNorm(hidden_dim), nn.GELU(),
         )
         self.descriptor_trunk = nn.Sequential(
             nn.Linear(descriptor_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.GELU(),
@@ -114,10 +127,20 @@ class OmniPolicy(nn.Module):
         obs: torch.Tensor,
         tool_descriptors: torch.Tensor,
         afforded: torch.Tensor,
+        expertise: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if tool_descriptors.ndim != 3 or afforded.ndim != 2:
             raise ValueError("tool_descriptors must be [B,T,D] and afforded [B,T]")
-        context = self.obs_trunk(obs)
+        if expertise is None:
+            expertise = torch.zeros(
+                (obs.shape[0], EXPERTISE_DIM),
+                dtype=obs.dtype,
+                device=obs.device,
+            )
+            expertise[:, 1] = 1.0
+        if expertise.ndim != 2 or expertise.shape != (obs.shape[0], EXPERTISE_DIM):
+            raise ValueError(f"expertise must be [B,{EXPERTISE_DIM}]")
+        context = self.obs_trunk(obs) + self.expertise_trunk(expertise)
         descriptors = self.descriptor_trunk(tool_descriptors)
         context_rows = context.unsqueeze(1).expand(-1, descriptors.shape[1], -1)
         scores = self.score_head(torch.cat((context_rows, descriptors), dim=-1)).squeeze(-1)
@@ -135,6 +158,7 @@ class OmniDataset(Dataset):
     obs: torch.Tensor
     tool_descriptors: torch.Tensor
     afforded: torch.Tensor
+    expertise: torch.Tensor
     tool: torch.Tensor
     target: torch.Tensor
     params: torch.Tensor
@@ -145,7 +169,15 @@ class OmniDataset(Dataset):
     def __getitem__(self, index: int):
         return tuple(
             x[index]
-            for x in (self.obs, self.tool_descriptors, self.afforded, self.tool, self.target, self.params)
+            for x in (
+                self.obs,
+                self.tool_descriptors,
+                self.afforded,
+                self.expertise,
+                self.tool,
+                self.target,
+                self.params,
+            )
         )
 
     @classmethod
@@ -159,6 +191,7 @@ class OmniDataset(Dataset):
         if not base:
             raise ValueError("no trajectory records")
         names = [str(x.get("name", x)) if isinstance(x, Mapping) else str(x) for x in manifest]
+        expertise = torch.tensor(np.stack([record_expertise(record) for record in base]), dtype=torch.float32)
         name_to_id = {name: i for i, name in enumerate(names)}
         encoded = [encode_record(record) for record in base]
         raw_obs = np.stack([row[0] for row in encoded])
@@ -177,6 +210,7 @@ class OmniDataset(Dataset):
             obs,
             desc.unsqueeze(0).expand(len(base), -1, -1).clone(),
             _mask_rows(masks, len(desc)),
+            expertise,
             tools,
             targets,
             params,
@@ -194,7 +228,7 @@ class OmniDataset(Dataset):
             raise ValueError("fixture file has no records")
         desc = descriptor_rows(manifest)
         names = [str(x.get("name", x)) if isinstance(x, Mapping) else str(x) for x in manifest]
-        rows, masks, tools, targets = [], [], [], []
+        rows, masks, expertise, tools, targets = [], [], [], [], []
         for record in records:
             logits = np.asarray(record["tool_logits"], dtype=np.float32)
             mask = int(record["mask"])
@@ -205,6 +239,7 @@ class OmniDataset(Dataset):
             target = int(target_logits.argmax()) if present else IGNORE_INDEX
             rows.append(record.get("features", record["raw_features"]))
             masks.append(mask)
+            expertise.append(record_expertise(record))
             tools.append(tool)
             targets.append(target)
         obs = torch.tensor(np.asarray(rows, dtype=np.float32))
@@ -212,6 +247,7 @@ class OmniDataset(Dataset):
             obs,
             desc.unsqueeze(0).expand(len(rows), -1, -1).clone(),
             _mask_rows(torch.tensor(masks), len(desc)),
+            torch.tensor(np.stack(expertise), dtype=torch.float32),
             torch.tensor(tools),
             torch.tensor(targets),
             torch.zeros((len(rows), DEFAULT_PARAM_DIM)),

@@ -69,3 +69,40 @@ The initial habit-cache gate was green while reporting 82.7% hits. Review showed
 ## Reproducibility notes
 
 The deterministic contract is the validated-intent log plus seed and model/backend identifiers; neural outputs are advisory. Kernel and pack state are hash state, while habit-cache state is deliberately policy state outside `world.state_hash`. Throughput and wall-clock measurements are report-only and do not feed simulation state. Re-running the named gates should preserve hashes and behavioral assertions, but hardware-dependent throughput and live-model latency should be treated as measurements for the recorded machine, not universal constants.
+
+## 2026-07-15 — 1K Spark-labeled OMNI ladder (pipeline-validation evidence only)
+
+**Purpose and status.** This run validated the data/label/training/export/release path; it did not establish a capacity curve, a smallest-tier ranking, or a promotion result. The dataset contained 1,000 records, split 800 train / 200 heldout by `index % 5` record stride. All seven tiers used the same records and shared normalization fit over the full 1,000-record set; width was changed together with the seed (`20260715, 20260716, 20260717, 20260718, 20260719, 20260720, 20260721`). There was no independent test set.
+
+### Action-match measurements
+
+| Tier | Parameters | Train match | Heldout match |
+|---|---:|---:|---:|
+| tier-0 | 311,997 | 0.9225 | 0.725 |
+| tier-1 | 676,493 | 0.90625 | 0.695 |
+| tier-2 | 1,335,053 | 0.9075 | 0.690 |
+| tier-3 | 2,557,197 | 0.9125 | 0.705 |
+| tier-4 | 5,127,693 | 0.82125 | 0.685 |
+| tier-5 | 9,931,277 | 0.86875 | 0.690 |
+| tier-6 | 20,085,773 | 0.8900 | 0.680 |
+
+The tail probe covered 8,448 rows × 33 dimensions. In tier order 0–6, tail heldout match was `0.625, 0.59375, 0.6171875, 0.625, 0.5859375, 0.5859375, 0.59375`; tail-clamp match was `0.640625, 0.59375, 0.625, 0.640625, 0.609375, 0.5859375, 0.6171875`; and clamp-changed fraction was `0.046875, 0.0078125, 0.015625, 0.0234375, 0.0390625, 0.015625, 0.0390625`. The raw tail-feature fraction was `0.00429990328848362` for every tier. The +4/−4 tail match pairs were `(0.6053503751754761, 0.6048768758773804)`, `(0.5707859992980957, 0.5705492496490479)`, `(0.6060606241226196, 0.5984848737716675)`, `(0.6053503751754761, 0.6032196879386902)`, `(0.5901988744735718, 0.578125)`, `(0.5828598737716675, 0.5854640007019043)`, and `(0.5802556872367859, 0.5686553120613098)`.
+The corresponding final train/heldout losses were, in tier order: `(0.21769002199172974, 1.5785443258285523)`, `(0.30663896024227144, 1.4133897161483764)`, `(0.2811539214849472, 1.6312757015228272)`, `(0.2250473192334175, 1.8670896434783935)`, `(0.5746346044540406, 1.1518525385856628)`, `(0.4109943062067032, 1.2729276251792907)`, `(0.29342915177345275, 1.555791847705841)`. The +4/−4 prediction-change fractions were `(0.1276041716337204, 0.11055871099233627)`, `(0.09232954680919647, 0.09398674219846725)`, `(0.09280303120613098, 0.08262310922145844)`, `(0.08001893758773804, 0.07954545319080353)`, `(0.059659089893102646, 0.0703125)`, `(0.09209280461072922, 0.09801136702299118)`, and `(0.07528409361839294, 0.07007575780153275)`.
+
+### Why this is not a capacity result
+
+Only 200 records were held out, with p≈0.7 and an approximate 95% binomial interval of ±6.4 percentage points. The observed 4.5-point heldout spread is flat within that uncertainty. Width is confounded with seed, and the record-stride split leaks correlated states from the same trajectories. Normalization leakage comes from fitting over train plus heldout; the selected checkpoint is also chosen by that heldout score, so the score is optimistically biased. There is no independent test set. Speak is 564/1,000 labels, so class imbalance further limits action-match interpretation. The result is data-limited/proxy-saturated pipeline validation, not evidence that the smallest tier wins or that capacity is the bottleneck.
+
+### Release A/B and performance caveat
+
+The real release A/B smoke command was `target/release/mw-sim soak --policy omni-both --ticks 20 --agents 4 --seed 7 --onnx-path training/artifacts/ladder/tier-0/model.onnx --habits off` (8.75 s). UtilitySoul: deaths=0, hunger=979, energy=990, social=968, hash `0x674bce3b4ca910f9`, idle=80. OmniSoul: deaths=0, hunger=979, energy=997, social=984, hash `0x94505170865734c8`, sleep=52/speak=28. Deltas (OmniSoul−UtilitySoul): deaths=0, hunger=+0.0, energy=+7.7, social=+15.1. Release determinism passed at 8 agents × 40 ticks in 76 s. The corresponding debug run exceeded 3,600 s; debug performance is unresolved and these runs support no throughput claim. This A/B is a release wiring/execution check and simulator diagnostic, not a promotion gate.
+
+### Corrected v1 evidence, expertise validation, and explicit non-claims
+
+The corrected 1K reference replaced the pilot methodology before promotion: 1,000 Spark-grounded records are partitioned by whole `(world_seed, trajectory)` groups into 500 train rows over 2 groups, 250 validation rows over 1 group, and 250 untouched test rows over 1 group. Normalization is train-only; validation selects the checkpoint; test is evaluated once after selection. The 296-hidden-unit (311,997-parameter) reference was trained with seeds `20260715`, `20260716`, and `20260717`; test action match was `0.884` for every seed. See `training/artifacts/corrected-reference-1k/aggregate.json`; corrected validation summary SHA-256 is `d5f3d6a85002e2ef6b6b8a92a93077eba2a71382556f38cdbaa63ff7d57562dc`.
+
+The 1K promotion stop gate **SKIPPED** the planned 5K→100K scaling run; those tiers were not executed. The seven-tier capacity ladder is likewise **SKIPPED** because no valid cross-width evidence exists. The historical pilot above remains explicitly invalid evidence: its 4.5-point spread was within approximately ±6.4 points of uncertainty and was confounded by width/seed, record-stride correlation, full-data normalization, and heldout checkpoint reuse. It supports no capacity, scaling, or smallest-tier claim.
+
+Expertise is a deliberate `novice`/`capable`/`expert` one-hot input across Python, ONNX, and Rust release inference; legacy 3-input graphs default to `capable`. Matched expertise has 3,000 records from 1,000 matched states, yet only 3/1,000 states are strictly triplet-separable. This degeneracy remains a prominent limitation. Nevertheless, three independently seeded checkpoints passed preregistered paired simulator separation over 72 release runs. Expert-minus-novice balanced means were `1.484375`, `1.5`, and `1.4375`. The review corrected death-rate CI calculations to use rates rather than raw death counts. Preregistration SHA-256 is `97f056f6113149ece76a391da2bd1e66d8f83f811082ff5b916119905937bdc5`.
+
+Spark is a persona-aware candidate generator; deterministic 8-tick rollout selects legal capable targets. Promotion is based on simulator behavior, not action match alone. These results are bounded v1 evidence and do not establish capacity, scaling, or broad generalization.

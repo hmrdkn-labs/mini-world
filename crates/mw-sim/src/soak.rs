@@ -14,8 +14,8 @@ use mw_agents::memory::{Memory, OPINION_ONE};
 use mw_agents::obs::N_STATS;
 use mw_agents::persona::{trait_idx, Persona};
 use mw_agents::soul::{Body, Choice, Social, ToolSem, UtilitySoul, TOOL_SLOTS};
-use mw_core::{AgentRng, EntityId, Intent, Observation, SoulPolicy, World};
-use mw_neural::{encode, NeuralRuntime, NeuralSoul};
+use mw_core::{AgentRng, EntityId, Intent, Observation, ScenarioPack, SoulPolicy, World};
+use mw_neural::{encode, encode_omni_with_expertise, ExpertiseLevel, NeuralRuntime, NeuralSoul, OmniEncodedInput, OmniRuntime, OmniSoul};
 use mw_village::{tile_at, verb, Action, Item, Tile, VillagePack, GRID, MAX_NEED, TOOL_COUNT};
 
 /// Soak parameters.
@@ -240,6 +240,10 @@ impl Body for VillageBody {
 }
 
 type VillageSoul = UtilitySoul<VillageBody>;
+enum AdvisoryPolicy {
+    Neural(NeuralSoul),
+    Omni(OmniSoul),
+}
 
 enum ActiveSoul {
     Plain(VillageSoul),
@@ -252,10 +256,11 @@ enum ActiveSoul {
 /// argmaxes and a deterministic safety action handles an idle collapse.
 struct NeuralSoulAdapter {
     observer: UtilitySoul<VillageBody>,
-    policy: NeuralSoul,
+    policy: AdvisoryPolicy,
     pending: Vec<(Intent, u32, Intent, u32)>,
     cursor: usize,
     hist: [u64; TOOL_SLOTS],
+    expertise: ExpertiseLevel,
 }
 
 impl NeuralSoulAdapter {
@@ -288,12 +293,53 @@ impl NeuralSoulAdapter {
                 memories,
                 positions,
             ),
-            policy,
+            policy: AdvisoryPolicy::Neural(policy),
             pending: Vec::new(),
             cursor: 0,
             hist: [0; TOOL_SLOTS],
+            expertise: ExpertiseLevel::Capable,
         }
     }
+    fn load_omni(
+        runtime: OmniRuntime,
+        manifest: mw_core::ActionManifest,
+        ids: Vec<EntityId>,
+        personas: Vec<Persona>,
+        positions: Vec<(i32, i32)>,
+        pack: Rc<VillagePack>,
+        expertise: ExpertiseLevel,
+    ) -> Self {
+        let factions = personas.iter().map(Persona::faction).collect();
+        let memories = ids
+            .iter()
+            .map(|&id| Memory::new(id, verb_affect()))
+            .collect();
+        let policy = OmniSoul::with_context(
+            runtime,
+            0,
+            Persona {
+                traits: [500; mw_agents::persona::N_TRAITS],
+                weights: [500; mw_agents::persona::N_WEIGHTS],
+            },
+            manifest,
+        );
+        Self {
+            observer: UtilitySoul::new(
+                VillageBody::new(pack, factions),
+                tool_table(),
+                ids,
+                personas,
+                memories,
+                positions,
+            ),
+            policy: AdvisoryPolicy::Omni(policy),
+            pending: Vec::new(),
+            cursor: 0,
+            hist: [0; TOOL_SLOTS],
+            expertise,
+        }
+    }
+
 
     fn snapshot(&mut self, world: &World) {
         self.observer.snapshot(world);
@@ -308,30 +354,62 @@ impl NeuralSoulAdapter {
                 observations.len()
             )));
         }
-        let rows: Vec<_> = rich
-            .iter()
-            .enumerate()
-            .map(|(slot, obs)| {
-                let persona = self.observer.persona_at(slot).ok_or_else(|| {
-                    mw_neural::Error::Shape(format!("missing persona for slot {slot}"))
-                })?;
-                encode(slot as u32, &persona, obs, self.policy.runtime().norm())
-            })
-            .collect::<Result<_, _>>()?;
-        let outputs = self.policy.infer_batch(&rows)?;
+        let outputs: Vec<(u32, Option<usize>)> = match &self.policy {
+            AdvisoryPolicy::Neural(policy) => {
+                let rows: Vec<_> = rich
+                    .iter()
+                    .enumerate()
+                    .map(|(slot, obs)| {
+                        let persona = self.observer.persona_at(slot).ok_or_else(|| {
+                            mw_neural::Error::Shape(format!("missing persona for slot {slot}"))
+                        })?;
+                        encode(slot as u32, &persona, obs, policy.runtime().norm())
+                    })
+                    .collect::<Result<_, _>>()?;
+                policy
+                    .infer_batch(&rows)?
+                    .into_iter()
+                    .map(|output| (output.tool, output.target_slot))
+                    .collect()
+            }
+            AdvisoryPolicy::Omni(policy) => {
+                let rows: Vec<_> = rich
+                    .iter()
+                    .enumerate()
+                    .map(|(slot, obs)| {
+                        let persona = self.observer.persona_at(slot).ok_or_else(|| {
+                            mw_neural::Error::Shape(format!("missing persona for slot {slot}"))
+                        })?;
+                        encode_omni_with_expertise(
+                            slot as u32,
+                            &persona,
+                            obs,
+                            policy.runtime().norm(),
+                            policy.manifest(),
+                            self.expertise,
+                        )
+                    })
+                    .collect::<Result<Vec<OmniEncodedInput>, _>>()?;
+                policy
+                    .infer_batch(&rows)?
+                    .into_iter()
+                    .map(|output| (output.tool, output.target_slot))
+                    .collect()
+            }
+        };
         self.pending = outputs
             .iter()
             .zip(rich.iter())
             .enumerate()
-            .map(|(slot, (output, obs))| {
+            .map(|(slot, ((tool, target_slot), obs))| {
                 let fallback_tool = safety_tool(obs, observations[slot].tool_mask, obs.tick, slot);
                 let fallback = self
                     .observer
                     .intent_from_tool(slot, obs, fallback_tool, None);
-                let neural =
-                    self.observer
-                        .intent_from_tool(slot, obs, output.tool, output.target_slot);
-                (neural, output.tool, fallback, fallback_tool)
+                let neural = self
+                    .observer
+                    .intent_from_tool(slot, obs, *tool, *target_slot);
+                (neural, *tool, fallback, fallback_tool)
             })
             .collect();
         self.cursor = 0;
@@ -349,7 +427,15 @@ impl NeuralSoulAdapter {
     fn histogram(&self) -> &[u64; TOOL_SLOTS] {
         &self.hist
     }
+
+    fn take_omni_runtime(self) -> Option<OmniRuntime> {
+        match self.policy {
+            AdvisoryPolicy::Omni(policy) => Some(policy.into_runtime()),
+            AdvisoryPolicy::Neural(_) => None,
+        }
+    }
 }
+
 
 impl SoulPolicy for NeuralSoulAdapter {
     fn decide(&mut self, _obs: &Observation, _rng: &mut AgentRng) -> Intent {
@@ -721,37 +807,129 @@ struct NeuralRun {
     world: World,
     pack: Rc<VillagePack>,
     positions: Vec<(i32, i32)>,
+    omni_runtime: Option<OmniRuntime>,
 }
 
 pub fn run_neural(
     cfg: SoakConfig,
     model_path: impl AsRef<std::path::Path>,
 ) -> Result<SoakReport, mw_neural::Error> {
-    Ok(run_neural_logged(cfg, model_path)?.report)
+    Ok(run_neural_logged(cfg, model_path, false)?.report)
+}
+
+pub fn run_omni(
+    cfg: SoakConfig,
+    model_path: impl AsRef<std::path::Path>,
+) -> Result<SoakReport, mw_neural::Error> {
+    Ok(run_neural_logged(cfg, model_path, true)?.report)
+}
+
+pub fn run_omni_with_expertise(
+    cfg: SoakConfig,
+    model_path: impl AsRef<std::path::Path>,
+    expertise: ExpertiseLevel,
+) -> Result<SoakReport, mw_neural::Error> {
+    Ok(run_neural_logged_with_expertise(cfg, model_path, expertise)?.report)
+}
+
+/// Run OmniSoul while reusing an already-loaded runtime between worlds.
+/// Runtime plan caches are immutable with respect to simulation state, so this
+/// only avoids repeated ONNX model loading/compilation.
+pub fn run_omni_cached(
+    cfg: SoakConfig,
+    model_path: impl AsRef<std::path::Path>,
+    runtime: Option<OmniRuntime>,
+) -> Result<(SoakReport, OmniRuntime), mw_neural::Error> {
+    let run = run_neural_logged_with_runtime(cfg, model_path, true, runtime)?;
+    let runtime = run
+        .omni_runtime
+        .expect("OMNI runner must return its reusable runtime");
+    Ok((run.report, runtime))
+}
+
+pub fn run_omni_cached_with_expertise(
+    cfg: SoakConfig,
+    model_path: impl AsRef<std::path::Path>,
+    expertise: ExpertiseLevel,
+    runtime: Option<OmniRuntime>,
+) -> Result<(SoakReport, OmniRuntime), mw_neural::Error> {
+    let run = run_neural_logged_with_runtime_expertise(cfg, model_path, true, expertise, runtime)?;
+    let runtime = run.omni_runtime.expect("OMNI runner must return its reusable runtime");
+    Ok((run.report, runtime))
 }
 
 fn run_neural_logged(
     cfg: SoakConfig,
     model_path: impl AsRef<std::path::Path>,
+    omni: bool,
+) -> Result<NeuralRun, mw_neural::Error> {
+    run_neural_logged_with_runtime(cfg, model_path, omni, None)
+}
+
+fn run_neural_logged_with_expertise(
+    cfg: SoakConfig,
+    model_path: impl AsRef<std::path::Path>,
+    expertise: ExpertiseLevel,
+) -> Result<NeuralRun, mw_neural::Error> {
+    run_neural_logged_with_runtime_expertise(cfg, model_path, true, expertise, None)
+}
+
+fn run_neural_logged_with_runtime(
+    cfg: SoakConfig,
+    model_path: impl AsRef<std::path::Path>,
+    omni: bool,
+    reusable_omni_runtime: Option<OmniRuntime>,
+) -> Result<NeuralRun, mw_neural::Error> {
+    run_neural_logged_with_runtime_expertise(
+        cfg,
+        model_path,
+        omni,
+        ExpertiseLevel::Capable,
+        reusable_omni_runtime,
+    )
+}
+
+fn run_neural_logged_with_runtime_expertise(
+    cfg: SoakConfig,
+    model_path: impl AsRef<std::path::Path>,
+    omni: bool,
+    expertise: ExpertiseLevel,
+    reusable_omni_runtime: Option<OmniRuntime>,
 ) -> Result<NeuralRun, mw_neural::Error> {
     let model_path = model_path.as_ref();
     let norm_path = model_path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("training/artifacts"))
         .join("norm_stats.json");
-    let runtime = NeuralRuntime::load(model_path, norm_path)?;
     let pack = Rc::new(VillagePack::new());
     let mut world = World::with_pack(cfg.seed, &*pack);
     let positions = start_positions(cfg.agents);
     let ids: Vec<EntityId> = positions.iter().map(|&p| world.spawn(p)).collect();
     let personas: Vec<Persona> = ids.iter().map(|&id| Persona::new(cfg.seed, id)).collect();
-    let mut soul = ActiveSoul::Neural(Box::new(NeuralSoulAdapter::load(
-        runtime,
-        ids.clone(),
-        personas,
-        positions.clone(),
-        Rc::clone(&pack),
-    )));
+    let mut soul = if omni {
+        let runtime = match reusable_omni_runtime {
+            Some(runtime) => runtime,
+            None => OmniRuntime::load(model_path, &norm_path)?,
+        };
+        ActiveSoul::Neural(Box::new(NeuralSoulAdapter::load_omni(
+            runtime,
+            pack.manifest().clone(),
+            ids.clone(),
+            personas,
+            positions.clone(),
+            Rc::clone(&pack),
+            expertise,
+        )))
+    } else {
+        let runtime = NeuralRuntime::load(model_path, &norm_path)?;
+        ActiveSoul::Neural(Box::new(NeuralSoulAdapter::load(
+            runtime,
+            ids.clone(),
+            personas,
+            positions.clone(),
+            Rc::clone(&pack),
+        )))
+    };
     let mut last_events = 0usize;
     let mut sum_needs = [0u128; N_STATS];
     let t0 = Instant::now();
@@ -785,12 +963,18 @@ fn run_neural_logged(
     let elapsed_secs = t0.elapsed().as_secs_f64();
     let deaths = ids.iter().filter(|&&id| pack.is_dead(&world, id)).count();
     let final_hash = world.state_hash(&*pack);
+    let histogram = *soul.histogram();
+    let omni_runtime = match soul {
+        ActiveSoul::Neural(neural) => neural.take_omni_runtime(),
+        _ => None,
+    };
     Ok(NeuralRun {
         report: SoakReport {
             cfg,
-            histogram: *soul.histogram(),
+            histogram,
             deaths,
             final_hash,
+
             elapsed_secs,
             sum_needs,
             habits_enabled: false,
@@ -800,6 +984,7 @@ fn run_neural_logged(
         world,
         pack,
         positions,
+        omni_runtime,
     })
 }
 /// Run utility and neural policies against identical initial state/configuration
@@ -811,6 +996,27 @@ pub fn run_ab(
     let utility = run_with_habits(cfg, false);
     let neural = run_neural(cfg, model_path)?;
     Ok(SoakComparison::new(utility, neural))
+}
+
+/// Run UtilitySoul against a dynamic-manifest OmniSoul on the same deterministic scenario.
+pub fn run_ab_omni(
+    cfg: SoakConfig,
+    model_path: impl AsRef<std::path::Path>,
+) -> Result<SoakComparison, mw_neural::Error> {
+    let utility = run_with_habits(cfg, false);
+    let omni = run_omni(cfg, model_path)?;
+    Ok(SoakComparison::new(utility, omni))
+}
+/// Run UtilitySoul against OmniSoul with explicit expertise on the same
+/// deterministic scenario.
+pub fn run_ab_omni_with_expertise(
+    cfg: SoakConfig,
+    model_path: impl AsRef<std::path::Path>,
+    expertise: ExpertiseLevel,
+) -> Result<SoakComparison, mw_neural::Error> {
+    let utility = run_with_habits(cfg, false);
+    let omni = run_omni_with_expertise(cfg, model_path, expertise)?;
+    Ok(SoakComparison::new(utility, omni))
 }
 
 #[cfg(test)]
@@ -833,13 +1039,27 @@ mod neural_tests {
     }
 
     #[test]
+    fn omni_same_seed_same_final_hash() {
+        let cfg = SoakConfig {
+            seed: 7,
+            agents: 8,
+            ticks: 40,
+        };
+        const OMNI_MODEL: &str = "../../training/artifacts/ladder/tier-0/model.onnx";
+        assert_eq!(
+            run_omni(cfg, OMNI_MODEL).unwrap().final_hash,
+            run_omni(cfg, OMNI_MODEL).unwrap().final_hash
+        );
+    }
+
+    #[test]
     fn neural_intent_log_replay_reproduces_hash() {
         let cfg = SoakConfig {
             seed: 17,
             agents: 8,
             ticks: 40,
         };
-        let run = run_neural_logged(cfg, MODEL).unwrap();
+        let run = run_neural_logged(cfg, MODEL, false).unwrap();
         let log = run.world.intent_log().to_vec();
         let replay_pack = VillagePack::new();
         let replay = World::replay(cfg.seed, &run.positions, cfg.ticks, &log, &replay_pack);

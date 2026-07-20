@@ -15,13 +15,14 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tract_onnx::prelude::*;
 
 pub const FEATURE_DIM: usize = 129;
 pub const N_TOOLS: usize = 12;
 pub const MODEL_INPUT_DIM: usize = FEATURE_DIM;
 pub const N_CELL_CLASSES: usize = 5;
+pub const EXPERTISE_DIM: usize = 3;
 
 #[derive(Debug)]
 pub enum Error {
@@ -94,6 +95,96 @@ pub struct EncodedInput {
 /// Descriptor width used by the training exporter.
 pub const OMNI_DESCRIPTOR_DIM: usize = 16;
 pub const OMNI_PARAM_DIM: usize = 4;
+/// The seven trained OMNI distillation artifacts, in deterministic assignment order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum OmniTier {
+    Tier0 = 0,
+    Tier1 = 1,
+    Tier2 = 2,
+    Tier3 = 3,
+    Tier4 = 4,
+    Tier5 = 5,
+    Tier6 = 6,
+}
+
+impl OmniTier {
+    pub const ALL: [Self; 7] = [
+        Self::Tier0, Self::Tier1, Self::Tier2, Self::Tier3, Self::Tier4, Self::Tier5, Self::Tier6,
+    ];
+
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
+    pub const fn hidden_dim(self) -> usize {
+        match self {
+            Self::Tier0 => 296,
+            Self::Tier1 => 448,
+            Self::Tier2 => 640,
+            Self::Tier3 => 896,
+            Self::Tier4 => 1280,
+            Self::Tier5 => 1792,
+            Self::Tier6 => 2560,
+        }
+    }
+
+    pub const fn artifact_dir(self) -> &'static str {
+        match self {
+            Self::Tier0 => "tier-0",
+            Self::Tier1 => "tier-1",
+            Self::Tier2 => "tier-2",
+            Self::Tier3 => "tier-3",
+            Self::Tier4 => "tier-4",
+            Self::Tier5 => "tier-5",
+            Self::Tier6 => "tier-6",
+        }
+    }
+
+    pub fn model_path(self, artifact_root: impl AsRef<Path>) -> PathBuf {
+        artifact_root.as_ref().join(self.artifact_dir()).join("model.onnx")
+    }
+
+    pub fn norm_path(self, artifact_root: impl AsRef<Path>) -> PathBuf {
+        artifact_root
+            .as_ref()
+            .join(self.artifact_dir())
+            .join("norm_stats.json")
+    }
+}
+
+/// Assign a character to one of the trained artifacts without ambient randomness.
+pub fn assign_omni_tier(seed: u64, agent_slot: u32) -> OmniTier {
+    let mut value = seed ^ (agent_slot as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    value ^= value >> 30;
+    value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value ^= value >> 27;
+    value = value.wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^= value >> 31;
+    OmniTier::ALL[(value % OmniTier::ALL.len() as u64) as usize]
+}
+
+/// Stable explicit expertise conditioning levels, encoded as novice/capable/expert.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ExpertiseLevel {
+    Novice = 0,
+    Capable = 1,
+    Expert = 2,
+}
+
+impl ExpertiseLevel {
+    pub const fn one_hot(self) -> [f32; EXPERTISE_DIM] {
+        match self {
+            Self::Novice => [1.0, 0.0, 0.0],
+            Self::Capable => [0.0, 1.0, 0.0],
+            Self::Expert => [0.0, 0.0, 1.0],
+        }
+    }
+}
+
+pub const DEFAULT_EXPERTISE: ExpertiseLevel = ExpertiseLevel::Capable;
+
 
 /// Inputs to one OMNI policy row. Descriptor rows are flattened row-major.
 #[derive(Clone, Debug, PartialEq)]
@@ -102,6 +193,7 @@ pub struct OmniEncodedInput {
     pub tool_descriptors: Vec<f32>,
     pub tool_ids: Vec<u32>,
     pub afforded: Vec<bool>,
+    pub expertise: [f32; EXPERTISE_DIM],
     pub present: u8,
 }
 
@@ -190,13 +282,25 @@ pub fn descriptor_rows(manifest: &mw_core::ActionManifest) -> Result<Vec<f32>, E
     Ok(rows)
 }
 
-/// Encode a rich observation for an OMNI manifest-conditioned model.
+/// Encode a rich observation with the legacy-capable default expertise level.
 pub fn encode_omni(
     agent_slot: u32,
     persona: &Persona,
     obs: &AgentObs,
     norm: &NormStats,
     manifest: &mw_core::ActionManifest,
+) -> Result<OmniEncodedInput, Error> {
+    encode_omni_with_expertise(agent_slot, persona, obs, norm, manifest, DEFAULT_EXPERTISE)
+}
+
+/// Encode a rich observation with explicit deterministic expertise conditioning.
+pub fn encode_omni_with_expertise(
+    agent_slot: u32,
+    persona: &Persona,
+    obs: &AgentObs,
+    norm: &NormStats,
+    manifest: &mw_core::ActionManifest,
+    expertise: ExpertiseLevel,
 ) -> Result<OmniEncodedInput, Error> {
     let base = encode(agent_slot, persona, obs, norm)?;
     Ok(OmniEncodedInput {
@@ -208,6 +312,7 @@ pub fn encode_omni(
             .iter()
             .map(|tool| tool.id < 32 && obs.tool_mask & (1u32 << tool.id) != 0)
             .collect(),
+        expertise: expertise.one_hot(),
         present: base.present,
     })
 }
@@ -410,7 +515,12 @@ type OmniPlan = TypedRunnableModel<TypedModel>;
 
 // Tract cannot optimize the exported symbolic Expand for a dynamic tool axis;
 // specialize concrete `(batch, tools)` facts once and reuse each plan.
-fn compile_omni_plan(model: &OmniModel, batch: usize, tools: usize) -> Result<OmniPlan, Error> {
+fn compile_omni_plan(
+    model: &OmniModel,
+    batch: usize,
+    tools: usize,
+    has_expertise: bool,
+) -> Result<OmniPlan, Error> {
     let mut model = model.clone();
     model
         .set_input_fact(
@@ -430,6 +540,14 @@ fn compile_omni_plan(model: &OmniModel, batch: usize, tools: usize) -> Result<Om
             InferenceFact::dt_shape(f32::datum_type(), [batch, tools]),
         )
         .map_err(Error::Inference)?;
+    if has_expertise {
+        model
+            .set_input_fact(
+                3,
+                InferenceFact::dt_shape(f32::datum_type(), [batch, EXPERTISE_DIM]),
+            )
+            .map_err(Error::Inference)?;
+    }
     model
         .into_typed()
         .map_err(Error::Inference)?
@@ -442,6 +560,7 @@ fn compile_omni_plan(model: &OmniModel, batch: usize, tools: usize) -> Result<Om
 pub struct OmniRuntime {
     model: OmniModel,
     norm: NormStats,
+    has_expertise: bool,
     plans: RefCell<HashMap<(usize, usize), OmniPlan>>,
 }
 
@@ -451,9 +570,15 @@ impl OmniRuntime {
         let model = onnx()
             .model_for_path(model_path)
             .map_err(Error::Inference)?;
+        let has_expertise = model
+            .input_outlets()
+            .map_err(Error::Inference)?
+            .len()
+            >= 4;
         Ok(Self {
             model,
             norm,
+            has_expertise,
             plans: RefCell::new(HashMap::new()),
         })
     }
@@ -475,12 +600,13 @@ impl OmniRuntime {
         let batch = rows.len();
         let plan_key = (batch, tools);
         if !self.plans.borrow().contains_key(&plan_key) {
-            let plan = compile_omni_plan(&self.model, batch, tools)?;
+            let plan = compile_omni_plan(&self.model, batch, tools, self.has_expertise)?;
             self.plans.borrow_mut().insert(plan_key, plan);
         }
         let mut obs_data = Vec::with_capacity(batch * FEATURE_DIM);
         let mut descriptor_data = Vec::with_capacity(batch * tools * OMNI_DESCRIPTOR_DIM);
         let mut afforded_data = Vec::with_capacity(batch * tools);
+        let mut expertise_data = Vec::with_capacity(batch * EXPERTISE_DIM);
         for row in rows {
             obs_data.extend_from_slice(&row.features);
             descriptor_data.extend_from_slice(&row.tool_descriptors);
@@ -489,6 +615,7 @@ impl OmniRuntime {
                     .iter()
                     .map(|&value| if value { 1.0f32 } else { 0.0f32 }),
             );
+            expertise_data.extend_from_slice(&row.expertise);
         }
         let obs = Tensor::from_shape(&[batch, FEATURE_DIM], &obs_data)
             .map_err(|e| Error::Shape(e.to_string()))?;
@@ -497,12 +624,16 @@ impl OmniRuntime {
                 .map_err(|e| Error::Shape(e.to_string()))?;
         let afforded = Tensor::from_shape(&[batch, tools], &afforded_data)
             .map_err(|e| Error::Shape(e.to_string()))?;
+        let expertise = Tensor::from_shape(&[batch, EXPERTISE_DIM], &expertise_data)
+            .map_err(|e| Error::Shape(e.to_string()))?;
         let plans = self.plans.borrow();
-        let outputs = plans
-            .get(&plan_key)
-            .expect("OMNI plan inserted above")
-            .run(tvec![obs.into(), descriptors.into(), afforded.into()])
-            .map_err(Error::Inference)?;
+        let plan = plans.get(&plan_key).expect("OMNI plan inserted above");
+        let outputs = if self.has_expertise {
+            plan.run(tvec![obs.into(), descriptors.into(), afforded.into(), expertise.into()])
+        } else {
+            plan.run(tvec![obs.into(), descriptors.into(), afforded.into()])
+        }
+        .map_err(Error::Inference)?;
         if outputs.len() < 3 {
             return Err(Error::Shape(format!(
                 "expected three OMNI outputs, got {}",
@@ -750,6 +881,15 @@ impl OmniSoul {
             manifest,
         })
     }
+    /// Load one of the seven ladder artifacts under `artifact_root`.
+    pub fn load_tier(
+        artifact_root: impl AsRef<Path>,
+        tier: OmniTier,
+        manifest: mw_core::ActionManifest,
+    ) -> Result<Self, Error> {
+        Self::load(tier.model_path(&artifact_root), tier.norm_path(artifact_root), manifest)
+    }
+
 
     pub fn with_context(
         runtime: OmniRuntime,
@@ -765,9 +905,18 @@ impl OmniSoul {
         }
     }
 
+    /// Consume the policy and return its runtime for another deterministic run.
+    pub fn into_runtime(self) -> OmniRuntime {
+        self.runtime
+    }
+
     pub fn runtime(&self) -> &OmniRuntime {
         &self.runtime
     }
+    pub fn manifest(&self) -> &mw_core::ActionManifest {
+        &self.manifest
+    }
+
 
     pub fn infer_agent(
         &self,
@@ -775,12 +924,23 @@ impl OmniSoul {
         persona: &Persona,
         obs: &AgentObs,
     ) -> Result<OmniPolicyOutput, Error> {
-        let row = encode_omni(
+        self.infer_agent_with_expertise(agent_slot, persona, obs, DEFAULT_EXPERTISE)
+    }
+
+    pub fn infer_agent_with_expertise(
+        &self,
+        agent_slot: u32,
+        persona: &Persona,
+        obs: &AgentObs,
+        expertise: ExpertiseLevel,
+    ) -> Result<OmniPolicyOutput, Error> {
+        let row = encode_omni_with_expertise(
             agent_slot,
             persona,
             obs,
             self.runtime.norm(),
             &self.manifest,
+            expertise,
         )?;
         self.runtime
             .infer(std::slice::from_ref(&row))
@@ -838,8 +998,8 @@ impl SoulPolicy for OmniSoul {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mw_core::{agent_rng, stream, Intent, KernelPack, ScenarioPack, SoulPolicy, World};
     use mw_agents::obs::NeighborView;
-    use mw_core::{agent_rng, stream, Intent, SoulPolicy, World};
     #[test]
     fn encoder_layout_and_normalization() {
         let norm = NormStats {
@@ -867,6 +1027,61 @@ mod tests {
         assert_eq!(x.features[20], 0.0);
         assert_eq!(x.features[17], 1.0);
         assert_eq!(x.mask, 0xfff);
+    }
+    #[test]
+    fn expertise_encoding_is_stable_and_manifest_conditioned() {
+        let norm = NormStats {
+            mean: vec![0.0; FEATURE_DIM],
+            std: vec![1.0; FEATURE_DIM],
+        };
+        let persona = Persona {
+            traits: [500; 5],
+            weights: [500; 3],
+        };
+        let obs = AgentObs {
+            tick: 0,
+            self_stats: [500; 3],
+            self_pos: (0, 0),
+            self_cell_class: 0,
+            neighbors: [NeighborView::default(); 8],
+            events: [0; 4],
+            tool_mask: 0xfff,
+            goal: 0,
+        };
+        let manifest = KernelPack::new().manifest().clone();
+        let novice = encode_omni_with_expertise(
+            0,
+            &persona,
+            &obs,
+            &norm,
+            &manifest,
+            ExpertiseLevel::Novice,
+        )
+        .unwrap();
+        let capable = encode_omni_with_expertise(
+            0,
+            &persona,
+            &obs,
+            &norm,
+            &manifest,
+            ExpertiseLevel::Capable,
+        )
+        .unwrap();
+        let expert = encode_omni_with_expertise(
+            0,
+            &persona,
+            &obs,
+            &norm,
+            &manifest,
+            ExpertiseLevel::Expert,
+        )
+        .unwrap();
+        assert_eq!(novice.expertise, [1.0, 0.0, 0.0]);
+        assert_eq!(capable.expertise, [0.0, 1.0, 0.0]);
+        assert_eq!(expert.expertise, [0.0, 0.0, 1.0]);
+        assert_eq!(encode_omni(0, &persona, &obs, &norm, &manifest).unwrap().expertise, capable.expertise);
+        assert_eq!(novice.tool_descriptors, capable.tool_descriptors);
+        assert_eq!(novice.afforded, capable.afforded);
     }
     #[test]
     fn bundled_model_loads_and_runs() {
@@ -1039,4 +1254,45 @@ mod tests {
         let b = rt.infer_logits(std::slice::from_ref(&row)).unwrap();
         assert_eq!(a, b);
     }
+    #[test]
+    fn best_ladder_tier_loads_through_omni_soul() {
+        let pack = KernelPack::new();
+        let mut soul = OmniSoul::load_tier(
+            "../../training/artifacts/ladder",
+            OmniTier::Tier0,
+            pack.manifest().clone(),
+        )
+        .unwrap();
+        let persona = Persona {
+            traits: [500; 5],
+            weights: [500; 3],
+        };
+        let observation = AgentObs {
+            tick: 1,
+            self_stats: [500; 3],
+            self_pos: (0, 0),
+            self_cell_class: 0,
+            neighbors: [NeighborView::default(); 8],
+            events: [0; 4],
+            tool_mask: (1 << 0) | (1 << 3),
+            goal: 0,
+        };
+        let output = soul.infer_agent(0, &persona, &observation).unwrap();
+        assert!(matches!(output.tool, 0 | 3));
+    }
+
+    #[test]
+    fn omni_tier_assignment_and_artifact_mapping_are_deterministic() {
+        let widths: Vec<_> = OmniTier::ALL.iter().map(|tier| tier.hidden_dim()).collect();
+        assert_eq!(widths, vec![296, 448, 640, 896, 1280, 1792, 2560]);
+        for seed in [0, 1, 7, u64::MAX] {
+            for slot in 0..64 {
+                assert_eq!(assign_omni_tier(seed, slot), assign_omni_tier(seed, slot));
+            }
+        }
+        let tier = OmniTier::Tier4;
+        assert_eq!(tier.model_path("training/artifacts"), PathBuf::from("training/artifacts/tier-4/model.onnx"));
+        assert_eq!(tier.norm_path("training/artifacts"), PathBuf::from("training/artifacts/tier-4/norm_stats.json"));
+    }
+
 }

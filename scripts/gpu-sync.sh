@@ -15,10 +15,18 @@ fi
 
 case "${1:-}" in
   push)
-    rsync -azv "${dry[@]}" --exclude '.venv/' --exclude '__pycache__/' --exclude '.pytest_cache/' --exclude '*.pyc' "$root/training/" "$remote:$remote_root/training/"
+    if ((${#dry[@]})); then
+      rsync -azv "${dry[@]}" --exclude '.venv/' --exclude '__pycache__/' --exclude '.pytest_cache/' --exclude '*.pyc' "$root/training/" "$remote:$remote_root/training/"
+    else
+      rsync -azv --exclude '.venv/' --exclude '__pycache__/' --exclude '.pytest_cache/' --exclude '*.pyc' "$root/training/" "$remote:$remote_root/training/"
+    fi
     ;;
   pull)
-    rsync -azv "${dry[@]}" "$remote:$remote_root/training/artifacts/" "$root/training/artifacts/"
+    if ((${#dry[@]})); then
+      rsync -azv "${dry[@]}" "$remote:$remote_root/training/artifacts/" "$root/training/artifacts/"
+    else
+      rsync -azv "$remote:$remote_root/training/artifacts/" "$root/training/artifacts/"
+    fi
     ;;
   *)
     echo "Usage: $0 push|pull [--dry-run]" >&2

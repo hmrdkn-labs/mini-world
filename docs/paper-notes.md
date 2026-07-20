@@ -19,8 +19,8 @@ Working title: **mini-world: deterministic replay, latent dialogue, and habit-ca
 
 - Define the problem: many agents, deterministic world truth, offline/AFK progression, and limited on-device TEXT compute.
 - State that this is a resource/platform contribution for agent-based modeling and social-simulation research.
-- Separate the claims supported by the current vertical slice from future SOUL-v1 work.
-- State the paper's negative scope: no trained SOUL model, no benchmark leaderboard, no claim of human-level social behavior, and no claim that generated words determine outcomes.
+- Separate the claims supported by the current vertical slice and corrected OMNI-v1 evidence from future general SOUL work.
+- State the paper's negative scope: no benchmark leaderboard, no claim of human-level social behavior, no broad capacity/scaling claim, and no claim that generated words determine outcomes.
 
 ### 2. Related work and design rationale
 
@@ -79,10 +79,28 @@ Working title: **mini-world: deterministic replay, latent dialogue, and habit-ca
 - Evidence for TEXT budget: provenance `mw-v0` step 0 and commit context `ce43e04`; report 359 MiB Qwen3-0.6B Q4_0, 79 ms warm render, KV prompt work 104→1, and the measured M4 Pro Metal/CPU pp/tg values.
 - Gap: no phone-hardware measurement is in the current record. The architecture document's phone numbers are external research context, not mini-world measurements.
 
+#### 5.6 1K Spark-labeled OMNI ladder: pipeline validation only
+
+The seven-tier run used 1,000 records (800 train / 200 heldout) and widths from 311,997 to 20,085,773 parameters. Train match rates were `0.9225, 0.90625, 0.9075, 0.9125, 0.82125, 0.86875, 0.8900`; heldout match rates were `0.725, 0.695, 0.690, 0.705, 0.685, 0.690, 0.680` in tier order. The complete tail measurements and provenance are recorded in [`experiment-log.md`](experiment-log.md#2026-07-15--1k-spark-labeled-omni-ladder-pipeline-validation-evidence-only). These are action-match diagnostics for pipeline validation, not a capacity curve or a ranking of the smallest tier.
+
+Interpretation must state every limitation: n=200 heldout records, p≈0.7, approximate 95% binomial interval ±6.4 percentage points, observed tier spread 4.5 points, width confounded with seed, record-stride leakage across correlated trajectory states, normalization fit over train plus heldout, heldout-selected checkpoint optimism, no independent test set, and Speak imbalance (564/1,000). The defensible conclusion is data-limited/proxy-saturated, not capacity-limited.
+
+The real release A/B wiring smoke used the tier-0 artifact and 20 ticks × 4 agents: UtilitySoul had deaths=0, mean needs hunger=979, energy=990, social=968, hash `0x674bce3b4ca910f9`, idle=80; OmniSoul had deaths=0, hunger=979, energy=997, social=984, hash `0x94505170865734c8`, sleep=52/speak=28; deltas were deaths=0, hunger=+0.0, energy=+7.7, social=+15.1. It took 8.75 s in release. Release determinism passed at 8 agents × 40 ticks in 76 s, while the debug run exceeded 3,600 s; therefore debug performance and throughput remain unresolved. This is a release execution check, not a policy-quality or promotion result.
+
+The corrected v1 sequence is now complete: group-partitioned 1K evaluation, train-only normalization, validation-only checkpoint selection, untouched test evaluation, explicit expertise, and paired simulator promotion. The planned 5K→100K scaling run stopped at the 1K promotion gate and was not executed. The capacity ladder is **SKIP**: no valid cross-width evidence, hence no capacity claim.
+
+#### 5.7 Corrected v1 reference and expertise axis
+
+The corrected 1K reference has 500 train rows over 2 whole world/trajectory groups, 250 validation rows over 1 group, and 250 untouched test rows over 1 group. The 296-hidden-unit (311,997-parameter) checkpoint uses train-only normalization and validation selection; three model seeds (`20260715`, `20260716`, `20260717`) each reach `0.884` test action match. The corrected validation-summary hash is `d5f3d6a85002e2ef6b6b8a92a93077eba2a71382556f38cdbaa63ff7d57562dc`.
+
+Expertise is an explicit Python/ONNX/Rust one-hot contract (`novice`, `capable`, `expert`), with deliberate `capable` default for legacy 3-input graphs. The matched set has 3,000 records and 1,000 matched states, but only 3/1,000 strict triplet-separable states; this label degeneracy must remain prominent. Three expertise checkpoints passed preregistered paired simulator separation across 72 release runs. Expert-minus-novice balanced means were `1.484375`, `1.5`, and `1.4375`; death-rate CI calculations use rates, not raw counts. The preregistration hash is `97f056f6113149ece76a391da2bd1e66d8f83f811082ff5b916119905937bdc5`.
+
+Spark is a persona-aware candidate generator and deterministic 8-tick rollout selects legal capable targets. Promotion is simulator behavior, not action match alone. The historical pilot remains invalid pipeline evidence (4.5-point spread within approximately ±6.4-point uncertainty with confounds); neither it nor the skipped scaling/ladder supports a capacity or scaling claim.
+
 ### 6. Methodology transparency: AI-agent team under human direction
 
 - State plainly that an AI-agent team built the system under human direction. The operator is the author and made the scope, contract, model-assignment, and adjudication decisions.
-- Identify the orchestration record as the provenance source: three actions, 20 steps, explicit gates, model/effort assignments, and measured results. Research used sonnet-class scouts; v0 implementation waves used Opus low/medium; v0.5 implementation and review used `gpt-5.6-luna` high effort.
+- Identify the orchestration record as the provenance source: the historical record covers three actions and 20 v0/v0.5 steps; the corrected v1 action adds the data, expertise, promotion, and documentation gates recorded below. Research used sonnet-class scouts; v0 implementation waves used Opus low/medium; v0.5 and v1 implementation/review used `gpt-5.6-luna` high effort.
 - Describe agents as implementation/research instruments, not independent authors or scientific validators. The human operator selected claims, reviewed diffs, required adversarial episodes, and rejected the pre-fix habit telemetry as a final metric.
 - Include prompts/agent assignments, commit history, test commands, model/backend versions, and the unedited provenance export as supplementary material where venue policy permits.
 - Report limitations: agent-generated code and prose can encode omissions; green tests can hide unreachable or mis-accounted behavior; review and targeted adversarial tests are part of the method, not evidence that all behavior is correct.
@@ -96,7 +114,7 @@ The following are **gaps requiring new experiments before submission** rather th
 - Human evaluation of observed and backfilled dialogue for act coherence, persona consistency, and perceived appropriateness; the current gate checks non-empty/act-constrained output, not human judgment.
 - Phone-hardware measurements (latency, sustained throughput, thermals, memory) for the target device classes; the current device budget is an M4 Pro measurement.
 - Independent replication on another machine/backend and a published replay-log fixture.
-- A trained SOUL-v1 policy and an evaluation protocol comparing it with the utility policy; v0/v0.5 contain no trained SOUL model.
+- A broader trained SOUL-v1 policy beyond the corrected OMNI reference, plus evaluation across packs/populations; v0/v0.5 contain no trained SOUL model.
 - Fair compute accounting for scorer calls, cache hits, social passthrough, and render work, with telemetry independently cross-checked against intent/event logs.
 - A stronger PID-reuse mitigation if process lifecycle is treated as a production claim; current handling narrows but does not make the TOCTOU atomic.
 

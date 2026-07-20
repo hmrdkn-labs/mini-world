@@ -11,6 +11,7 @@ use mw_core::{AgentRng, Intent, KernelPack, Observation, SoulPolicy, World};
 use mw_sim::dialogue::{demo, LlamaDialogue, Scene};
 use mw_sim::director::{self, FfConfig, TICKS_PER_DAY};
 use mw_sim::soak::{self, SoakConfig};
+use mw_neural::ExpertiseLevel;
 use mw_text::{Config, LlamaServerBackend};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -25,6 +26,23 @@ enum TrajectoryProfile {
     Scarcity,
     Hostile,
     Exhausted,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ExpertiseFlag {
+    Novice,
+    Capable,
+    Expert,
+}
+
+impl From<ExpertiseFlag> for ExpertiseLevel {
+    fn from(level: ExpertiseFlag) -> Self {
+        match level {
+            ExpertiseFlag::Novice => Self::Novice,
+            ExpertiseFlag::Capable => Self::Capable,
+            ExpertiseFlag::Expert => Self::Expert,
+        }
+    }
 }
 
 impl From<TrajectoryProfile> for mw_sim::trajectory::ExportProfile {
@@ -43,6 +61,8 @@ enum PolicyFlag {
     Utility,
     Neural,
     Both,
+    Omni,
+    OmniBoth,
 }
 
 #[derive(Parser)]
@@ -91,6 +111,12 @@ enum Command {
         #[arg(long, conflicts_with = "profile")]
         exhausted: bool,
     },
+    /// Pre-registered OmniSoul promotion gate over fixed held-out worlds.
+    Promotion {
+        /// Release OmniSoul model to evaluate (tier-0 by default).
+        #[arg(long, default_value = "training/artifacts/ladder/tier-0/model.onnx")]
+        model_path: String,
+    },
     /// Village social-sim soak with the utility or neural SOUL.
     Soak {
         #[arg(long, default_value_t = 10_000)]
@@ -108,6 +134,9 @@ enum Command {
         /// Replay routine decisions from the per-agent habit cache.
         #[arg(long, value_enum, default_value_t = HabitsFlag::On)]
         habits: HabitsFlag,
+        /// Explicit OMNI expertise conditioning; defaults to capable.
+        #[arg(long, value_enum, default_value_t = ExpertiseFlag::Capable)]
+        expertise: ExpertiseFlag,
     },
     /// Analytic AFK fast-forward: advance the village by an in-game span using
     /// the cold LOD ring, then print the returning-player digest.
@@ -179,43 +208,54 @@ fn run_kernel(ticks: u64, entities: i32, seed: u64) {
         world.state_hash(&pack),
     );
 }
-fn run_soak(ticks: u64, agents: i32, seed: u64, policy: PolicyFlag, onnx_path: &str, habits: bool) {
-    if policy == PolicyFlag::Both {
-        let comparison = match soak::run_ab(
-            SoakConfig {
-                seed,
-                agents,
-                ticks,
-            },
-            onnx_path,
-        ) {
+
+fn run_soak(
+    ticks: u64,
+    agents: i32,
+    seed: u64,
+    policy: PolicyFlag,
+    onnx_path: &str,
+    habits: bool,
+    expertise: ExpertiseLevel,
+) {
+    if matches!(policy, PolicyFlag::Both | PolicyFlag::OmniBoth) {
+        let omni = policy == PolicyFlag::OmniBoth;
+        let comparison = match if omni {
+            soak::run_ab_omni_with_expertise(
+                SoakConfig { seed, agents, ticks },
+                onnx_path,
+                expertise,
+            )
+        } else {
+            soak::run_ab(
+                SoakConfig { seed, agents, ticks },
+                onnx_path,
+            )
+        } {
             Ok(comparison) => comparison,
             Err(e) => {
                 eprintln!("neural soak failed: {e}");
                 std::process::exit(1);
             }
         };
-        print_ab(&comparison);
+        print_ab(&comparison, if omni { "OmniSoul" } else { "NeuralSoul" });
         return;
     }
     let report = match policy {
         PolicyFlag::Utility => Ok(soak::run_with_habits(
-            SoakConfig {
-                seed,
-                agents,
-                ticks,
-            },
+            SoakConfig { seed, agents, ticks },
             habits,
         )),
         PolicyFlag::Neural => soak::run_neural(
-            SoakConfig {
-                seed,
-                agents,
-                ticks,
-            },
+            SoakConfig { seed, agents, ticks },
             onnx_path,
         ),
-        PolicyFlag::Both => unreachable!("handled above"),
+        PolicyFlag::Omni => soak::run_omni_with_expertise(
+            SoakConfig { seed, agents, ticks },
+            onnx_path,
+            expertise,
+        ),
+        PolicyFlag::Both | PolicyFlag::OmniBoth => unreachable!("handled above"),
     };
     let report = match report {
         Ok(report) => report,
@@ -225,6 +265,32 @@ fn run_soak(ticks: u64, agents: i32, seed: u64, policy: PolicyFlag, onnx_path: &
         }
     };
     print_report(&report, policy, habits);
+}
+
+fn run_promotion(model_path: &str) {
+    let report = match mw_sim::promotion::run_expertise_promotion(
+        mw_sim::promotion::PromotionConfig::default(),
+        model_path,
+    ) {
+        Ok(report) => report,
+        Err(e) => {
+            eprintln!("promotion evaluation failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    println!(
+        "promotion evaluator={} seeds={} agents={} ticks={} passed={}",
+        report.evaluator,
+        report.seeds.len(),
+        report.agents,
+        report.ticks,
+        report.decision.passed
+    );
+    println!("machine_metrics_json:");
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).expect("promotion report serializes")
+    );
 }
 
 fn print_report(report: &soak::SoakReport, policy: PolicyFlag, habits: bool) {
@@ -263,15 +329,14 @@ fn print_report(report: &soak::SoakReport, policy: PolicyFlag, habits: bool) {
         println!("{line}");
     }
 }
-
-fn print_ab(comparison: &soak::SoakComparison) {
+fn print_ab(comparison: &soak::SoakComparison, policy_name: &str) {
     let utility = &comparison.utility;
     let neural = &comparison.neural;
     println!(
         "soak A/B seed={} agents={} ticks={} (same initial state)",
         utility.cfg.seed, utility.cfg.agents, utility.cfg.ticks
     );
-    for (name, report) in [("UtilitySoul", utility), ("NeuralSoul", neural)] {
+    for (name, report) in [("UtilitySoul", utility), (policy_name, neural)] {
         let mean = report.mean_needs();
         println!(
             "{name}: deaths={} mean_needs hunger={:.0} energy={:.0} social={:.0} hash={:#018x}",
@@ -425,6 +490,9 @@ fn main() {
             entities,
             seed,
         } => run_kernel(ticks, entities, seed),
+        Command::Promotion { model_path } => run_promotion(
+            &std::env::var("MW_ONNX_PATH").unwrap_or(model_path),
+        ),
         Command::Soak {
             ticks,
             agents,
@@ -432,6 +500,7 @@ fn main() {
             policy,
             onnx_path,
             habits,
+            expertise,
         } => run_soak(
             ticks,
             agents,
@@ -439,6 +508,7 @@ fn main() {
             policy,
             &std::env::var("MW_ONNX_PATH").unwrap_or(onnx_path),
             matches!(habits, HabitsFlag::On),
+            expertise.into(),
         ),
         Command::Trajectories {
             seed,

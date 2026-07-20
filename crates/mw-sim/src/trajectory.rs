@@ -2,7 +2,7 @@ use mw_agents::habits::{HabitContext, HabitSoul};
 use mw_agents::obs::{AgentObs, K_NEIGHBORS};
 use mw_agents::persona::Persona;
 use mw_agents::soul::{DecisionTrace, UtilitySoul};
-use mw_core::{EntityId, Event, Intent, SoulPolicy, World};
+use mw_core::{EntityId, Event, Intent, LogEntry, SoulPolicy, World};
 use mw_village::{tile_at, Action, Tile, VillagePack, MAX_NEED};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -102,6 +102,38 @@ pub struct OutcomeRecord {
     pub need_deltas: [i32; 3],
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReplayIntentRecord {
+    pub tick: u64,
+    pub actor_slot: u32,
+    pub intent: serde_json::Value,
+}
+
+/// Information sufficient to identify and audit the exact pre-action state.
+///
+/// The validated intent prefix is retained rather than re-running a policy:
+/// this is the kernel's replay contract.  `replay_hash` is the canonical
+/// `World::state_hash` immediately before the exported decision.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReplayProvenance {
+    pub version: u32,
+    pub profile: String,
+    pub fraction: u8,
+    pub agent_count: u32,
+    pub initial_positions: Vec<[i32; 2]>,
+    pub replay_log: Vec<ReplayIntentRecord>,
+    pub replay_hash: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StateSnapshot {
+    /// Canonical entity positions and pack state immediately before the action.
+    pub positions: Vec<[i32; 2]>,
+    pub needs: Vec<[i32; 3]>,
+    pub inventory: Vec<[u8; 2]>,
+    pub ground: Vec<[u8; 2]>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TrajectoryRecord {
     pub schema_version: u32,
     pub seed: u64,
@@ -113,6 +145,8 @@ pub struct TrajectoryRecord {
     pub decision: DecisionRecord,
     pub outcome: OutcomeRecord,
     pub replay: bool,
+    pub replay_provenance: ReplayProvenance,
+    pub state_snapshot: StateSnapshot,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExportStats {
@@ -121,6 +155,20 @@ pub struct ExportStats {
     pub bytes: u64,
     pub hash: u64,
     pub final_hash: u64,
+}
+/// Conservative preflight ceiling for JSONL trajectory exports.
+///
+/// Replay provenance and state snapshots are repeated on every selected record,
+/// so an otherwise modest `(agents, ticks)` request can become quadratic in
+/// serialized bytes. Reject it before creating the output file.
+pub const MAX_ESTIMATED_EXPORT_BYTES: u64 = 512 * 1024 * 1024;
+
+fn estimated_export_bytes(agents: u64, ticks: u64) -> Option<u64> {
+    let records = agents.checked_mul(ticks)?;
+    let per_record = 16_384u64
+        .checked_add(agents.checked_mul(512)?)?
+        .checked_add(records.checked_mul(64)?)?;
+    records.checked_mul(per_record)
 }
 struct Pending {
     record: TrajectoryRecord,
@@ -232,6 +280,137 @@ fn event_record(e: &Event) -> EventRecord {
             target_slot: None,
         },
     }
+}
+fn replay_intent_record(entry: &LogEntry) -> Option<ReplayIntentRecord> {
+    let LogEntry::Intent(logged) = entry else {
+        return None;
+    };
+    let intent = match &logged.intent {
+        Intent::Move { dx, dy } => serde_json::json!({"kind":"move","dx":dx,"dy":dy}),
+        Intent::Interact { target, verb } => {
+            serde_json::json!({"kind":"interact","target_slot":target.index(),"verb":verb})
+        }
+        Intent::Speak { target, act, topic } => serde_json::json!({
+            "kind":"speak","target_slot":target.index(),"act":act,"topic":topic
+        }),
+        Intent::Idle => serde_json::json!({"kind":"idle"}),
+    };
+    Some(ReplayIntentRecord {
+        tick: logged.tick,
+        actor_slot: logged.actor.index(),
+        intent,
+    })
+}
+
+fn replay_provenance(
+    world: &World,
+    t: u64,
+    positions: &[(i32, i32)],
+    profile: ExportProfile,
+    fraction: u8,
+    replay_hash: u64,
+) -> ReplayProvenance {
+    ReplayProvenance {
+        version: 1,
+        profile: profile.as_str().into(),
+        fraction,
+        agent_count: positions.len() as u32,
+        initial_positions: positions.iter().map(|&(x, y)| [x, y]).collect(),
+        replay_log: world
+            .intent_log()
+            .iter()
+            .filter(|entry| matches!(entry, LogEntry::Intent(l) if l.tick < t))
+            .filter_map(replay_intent_record)
+            .collect(),
+        replay_hash,
+    }
+}
+fn state_snapshot(pack: &VillagePack, world: &World, ids: &[EntityId], tick: u64) -> StateSnapshot {
+    StateSnapshot {
+        positions: ids
+            .iter()
+            .map(|&id| {
+                let pos = world.entity(id).map(|e| e.pos).unwrap_or_default();
+                [pos.0, pos.1]
+            })
+            .collect(),
+        needs: ids.iter().map(|&id| needs(pack, id, tick)).collect(),
+        inventory: ids
+            .iter()
+            .map(|&id| {
+                [
+                    pack.inventory(id, mw_village::Item::Food),
+                    pack.inventory(id, mw_village::Item::Water),
+                ]
+            })
+            .collect(),
+        ground: ids
+            .iter()
+            .map(|&id| {
+                let pos = world.entity(id).map(|e| e.pos).unwrap_or_default();
+                let items = pack.ground_at(pos);
+                [
+                    items[mw_village::Item::Food as usize],
+                    items[mw_village::Item::Water as usize],
+                ]
+            })
+            .collect(),
+    }
+}
+
+/// Reconstruct and hash the exact pre-action state represented by one export.
+pub fn replay_provenance_hash(seed: u64, record: &TrajectoryRecord) -> Result<u64, String> {
+    let profile = match record.replay_provenance.profile.as_str() {
+        "healthy" => ExportProfile::Healthy,
+        "scarcity" => ExportProfile::Scarcity,
+        "hostile" => ExportProfile::Hostile,
+        "exhausted" => ExportProfile::Exhausted,
+        other => return Err(format!("unknown profile {other}")),
+    };
+    let pack = VillagePack::new();
+    let positions: Vec<(i32, i32)> = record
+        .replay_provenance
+        .initial_positions
+        .iter()
+        .map(|p| (p[0], p[1]))
+        .collect();
+    let mut world = World::with_pack(seed, &pack);
+    let ids: Vec<EntityId> = positions.iter().map(|&p| world.spawn(p)).collect();
+    seed_profile(&pack, &ids, seed, profile, record.replay_provenance.fraction);
+    let mut log = Vec::with_capacity(record.replay_provenance.replay_log.len());
+    for item in &record.replay_provenance.replay_log {
+        let actor = ids
+            .get(item.actor_slot as usize)
+            .copied()
+            .ok_or_else(|| format!("actor slot {} out of range", item.actor_slot))?;
+        let obj = item.intent.as_object().ok_or_else(|| "replay intent is not an object".to_string())?;
+        let kind = obj.get("kind").and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "replay intent has no kind".to_string())?;
+        let intent = match kind {
+            "move" => Intent::Move {
+                dx: obj.get("dx").and_then(serde_json::Value::as_i64).unwrap_or(0) as i32,
+                dy: obj.get("dy").and_then(serde_json::Value::as_i64).unwrap_or(0) as i32,
+            },
+            "interact" => Intent::Interact {
+                target: EntityId::from_parts(obj.get("target_slot")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or_else(|| "interact intent has no target".to_string())? as u32, 0),
+                verb: obj.get("verb").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32,
+            },
+            "speak" => Intent::Speak {
+                target: EntityId::from_parts(obj.get("target_slot")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or_else(|| "speak intent has no target".to_string())? as u32, 0),
+                act: obj.get("act").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32,
+                topic: obj.get("topic").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32,
+            },
+            "idle" => Intent::Idle,
+            other => return Err(format!("unknown replay intent {other}")),
+        };
+        log.push(LogEntry::Intent(mw_core::LoggedIntent { tick: item.tick, actor, intent }));
+    }
+    let replayed = World::replay(seed, &positions, record.tick, &log, &pack);
+    Ok(replayed.state_hash(&pack))
 }
 fn needs(p: &VillagePack, id: EntityId, t: u64) -> [i32; 3] {
     let n = p.needs(id).project(t);
@@ -441,6 +620,16 @@ pub fn export_trajectories_profile(
         fraction,
     } = config;
     let agents = agents.max(1);
+    let estimated = estimated_export_bytes(agents as u64, ticks).unwrap_or(u64::MAX);
+    if estimated > MAX_ESTIMATED_EXPORT_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "trajectory export plan exceeds {} MiB (agents={agents}, ticks={ticks}, estimated_bytes={estimated})",
+                MAX_ESTIMATED_EXPORT_BYTES / (1024 * 1024)
+            ),
+        ));
+    }
     let pack = Rc::new(VillagePack::new());
     let mut world = World::with_pack(seed, &*pack);
     let positions = crate::soak::start_positions(agents);
@@ -465,6 +654,8 @@ pub fn export_trajectories_profile(
     for _ in 0..ticks {
         let t = world.tick();
         let mut before = Vec::with_capacity(ids.len());
+        let pre_state_hash = world.state_hash(&*pack);
+        let pre_snapshot = state_snapshot(&pack, &world, &ids, t);
         for &id in &ids {
             let n = needs(&pack, id, t);
             before.push(n);
@@ -508,6 +699,15 @@ pub fn export_trajectories_profile(
                             need_deltas: [0; 3],
                         },
                         replay: tr.replay,
+                        replay_provenance: replay_provenance(
+                            &world,
+                            t,
+                            &positions,
+                            profile,
+                            fraction,
+                            pre_state_hash,
+                        ),
+                        state_snapshot: pre_snapshot.clone(),
                     },
                     before_needs: before[slot],
                     events: Vec::new(),
@@ -588,6 +788,12 @@ mod tests {
                 traits: [1, 2, 3, 4, 5],
                 need_weights: [6, 7, 8],
             },
+            state_snapshot: StateSnapshot {
+                positions: vec![[0, 0], [1, 0], [2, 0]],
+                needs: vec![[900, 800, 700]; 3],
+                inventory: vec![[0, 0]; 3],
+                ground: vec![[0, 0]; 3],
+            },
             obs: ObsRecord {
                 tick: 3,
                 self_stats: [900, 800, 700],
@@ -620,6 +826,15 @@ mod tests {
                 need_deltas: [-2, -1, -3],
             },
             replay: false,
+            replay_provenance: ReplayProvenance {
+                version: 1,
+                profile: "healthy".into(),
+                fraction: 25,
+                agent_count: 3,
+                initial_positions: vec![[0, 0], [1, 0], [2, 0]],
+                replay_log: Vec::new(),
+                replay_hash: 0,
+            },
         };
         let s = serde_json::to_string(&r).unwrap();
         assert_eq!(r, serde_json::from_str(&s).unwrap())
@@ -634,6 +849,34 @@ mod tests {
         assert_eq!(fs::read(&a).unwrap(), fs::read(&b).unwrap());
         let _ = fs::remove_file(a);
         let _ = fs::remove_file(b);
+    }
+    #[test]
+    fn exported_pre_action_state_replays_to_recorded_hash() {
+        let path = std::env::temp_dir().join("mw-replay-provenance.jsonl");
+        export_trajectories_profile(
+            23,
+            3,
+            4,
+            path.to_str().unwrap(),
+            TrajectoryExportConfig {
+                habits: false,
+                include_replays: false,
+                profile: ExportProfile::Scarcity,
+                fraction: 25,
+            },
+        )
+        .unwrap();
+        for line in fs::read_to_string(&path).unwrap().lines() {
+            let record: TrajectoryRecord = serde_json::from_str(line).unwrap();
+            assert_eq!(
+                replay_provenance_hash(23, &record).unwrap(),
+                record.replay_provenance.replay_hash,
+                "tick {} slot {} failed replay parity",
+                record.tick,
+                record.agent_slot
+            );
+        }
+        let _ = fs::remove_file(path);
     }
     #[test]
     fn outcome_window_uses_eight_ticks() {
@@ -724,6 +967,14 @@ mod tests {
         .unwrap();
         assert!(exhausted_first.obs.self_stats[1] < 500);
         let _ = fs::remove_file(exhausted);
+    }
+    #[test]
+    fn rejects_quadratic_export_before_creating_output() {
+        let path = std::env::temp_dir().join("mw-pathological-export.jsonl");
+        let error = export_trajectories(17, 50, 300, path.to_str().unwrap(), false, false)
+            .expect_err("50x300 replay export must fail preflight");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(!path.exists());
     }
 }
 

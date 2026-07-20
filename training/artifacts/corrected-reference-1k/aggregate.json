@@ -1,0 +1,189 @@
+{
+  "provenance": {
+    "schema_version": 2,
+    "dataset": "training/artifacts/spark_ground_omni.jsonl",
+    "dataset_sha256": "ea48d4b0b66261e236d25a70fd53e1acd167c9b0f92f878a828d72568f56efc5",
+    "dataset_count": 1000,
+    "split_seed": 20260715,
+    "model_seeds": [
+      20260715,
+      20260716,
+      20260717
+    ],
+    "model_seed_independent_of_width": true,
+    "hidden_dim": 296,
+    "parameter_count": 311997,
+    "partition_ratios": {
+      "train": 0.7,
+      "val": 0.15,
+      "test": 0.15
+    },
+    "partition_counts": {
+      "train": 500,
+      "val": 250,
+      "test": 250
+    },
+    "partition_group_counts": {
+      "train": 2,
+      "val": 1,
+      "test": 1
+    },
+    "partition_groups": {
+      "train": [
+        {
+          "world_seed": "3000010",
+          "trajectory": "0"
+        },
+        {
+          "world_seed": "4000013",
+          "trajectory": "0"
+        }
+      ],
+      "val": [
+        {
+          "world_seed": "1000004",
+          "trajectory": "0"
+        }
+      ],
+      "test": [
+        {
+          "world_seed": "2000007",
+          "trajectory": "0"
+        }
+      ]
+    },
+    "selection_partition": "val",
+    "test_evaluation": "after_validation_selection_once_per_seed",
+    "normalization_fit_partition": "train",
+    "manifest": [
+      "move",
+      "eat",
+      "sleep",
+      "work",
+      "speak",
+      "give",
+      "pickup",
+      "drop",
+      "use",
+      "follow",
+      "flee",
+      "idle"
+    ]
+  },
+  "seeds": [
+    20260715,
+    20260716,
+    20260717
+  ],
+  "metrics": {
+    "train_match_rate": {
+      "values": [
+        0.728,
+        0.8,
+        0.728
+      ],
+      "mean": 0.7520000000000001,
+      "stddev": 0.04156921938165309,
+      "ci95_t_interval": [
+        0.648728,
+        0.8552720000000003
+      ]
+    },
+    "val_match_rate": {
+      "values": [
+        0.68,
+        0.688,
+        0.68
+      ],
+      "mean": 0.6826666666666666,
+      "stddev": 0.0046188021535169465,
+      "ci95_t_interval": [
+        0.6711920000000001,
+        0.6941413333333332
+      ]
+    },
+    "test_match_rate": {
+      "values": [
+        0.884,
+        0.884,
+        0.884
+      ],
+      "mean": 0.884,
+      "stddev": 0.0,
+      "ci95_t_interval": [
+        0.884,
+        0.884
+      ]
+    },
+    "train_loss": {
+      "values": [
+        1.0311716203689576,
+        0.5756544628143311,
+        0.9761836614608764
+      ],
+      "mean": 0.8610032482147217,
+      "stddev": 0.2486440546309681,
+      "ci95_t_interval": [
+        0.24328732302266642,
+        1.478719173406777
+      ]
+    },
+    "val_loss": {
+      "values": [
+        1.146949432373047,
+        1.164278875350952,
+        1.1425406742095947
+      ],
+      "mean": 1.151256327311198,
+      "stddev": 0.011491273002662969,
+      "ci95_t_interval": [
+        1.1227081187284123,
+        1.1798045358939837
+      ]
+    },
+    "test_loss": {
+      "values": [
+        0.7845030360221863,
+        0.9207232928276062,
+        0.7101679110527038
+      ],
+      "mean": 0.805131413300832,
+      "stddev": 0.10678267490775992,
+      "ci95_t_interval": [
+        0.5398471340405547,
+        1.0704156925611095
+      ]
+    }
+  },
+  "train_test_gap_match_rate": {
+    "values": [
+      -0.15600000000000003,
+      -0.08399999999999996,
+      -0.15600000000000003
+    ]
+  },
+  "artifact_hashes": {
+    "20260715": {
+      "model.onnx": "fedd6c03b0dd922f90e74221d922f587e34585a5658cf7666ac900f7b38ca2e5",
+      "config.json": "cd09d280044b39ae7c98715a3cc37086b4fe21c0d98ba58a41627039e39d3676",
+      "metrics.json": "c5ca67d4ddc0f90a700137a0bec6ae3d2c616a6b9bd4998f027c74f006cdf26a",
+      "norm_stats.json": "9791d6ecd59b31a0e30205d75704ff34afd808a36bc37874efe5444b65454d68",
+      "promotion.txt": "77c28acc2ef9e1956be77ecec4957e0e37cc3ca0dce5d51d8653ec11077b9ce1"
+    },
+    "20260716": {
+      "model.onnx": "3af98189bcae15a3f55fb9ac3c375af8f2da3147c576d396cc5e6fdd8fa0a730",
+      "config.json": "dbd545cd15cad833947f474047abbc70d839168c05e31a2e239c1865c88bc6d4",
+      "metrics.json": "6972a7204315a3cdb52c6bcb110418351f115653c29cbf9eda25ba4b0203407e",
+      "norm_stats.json": "9791d6ecd59b31a0e30205d75704ff34afd808a36bc37874efe5444b65454d68",
+      "promotion.txt": "a560397b259228cf200651614b35dd5c15c7c982e35c5c56301660bfabe2ab35"
+    },
+    "20260717": {
+      "model.onnx": "1b65ae8de0701b99cbbab3db7905c5a690c4ec9ce3a6a0cc25657009de671212",
+      "config.json": "a020dfe433528cd08a9bff1a8be98ba07be1e2a092a3ff9402bcabb46f56c39a",
+      "metrics.json": "53fc45f1a6e77c835cb68e2e565cf057a1131376462fa2a69bb1542160e4220e",
+      "norm_stats.json": "9791d6ecd59b31a0e30205d75704ff34afd808a36bc37874efe5444b65454d68",
+      "promotion.txt": "77c28acc2ef9e1956be77ecec4957e0e37cc3ca0dce5d51d8653ec11077b9ce1"
+    }
+  },
+  "distribution_report": "distributions.json"
+}

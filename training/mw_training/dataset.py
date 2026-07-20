@@ -38,6 +38,40 @@ N_TOOLS = len(TOOL_NAMES)
 N_NEIGHBORS = 8
 N_CELL_CLASSES = 5
 FEATURE_DIM = 5 + 3 + 1 + 1 + 3 + 2 + N_CELL_CLASSES + N_NEIGHBORS * 13 + 4 + 1
+EXPERTISE_LEVELS = ("novice", "capable", "expert")
+EXPERTISE_TO_ID = {name: i for i, name in enumerate(EXPERTISE_LEVELS)}
+EXPERTISE_DIM = len(EXPERTISE_LEVELS)
+DEFAULT_EXPERTISE = "capable"
+
+def expertise_id(value: object = DEFAULT_EXPERTISE) -> int:
+    """Return the stable novice/capable/expert id for an explicit rank."""
+    if isinstance(value, bool):
+        raise ValueError(f"invalid expertise rank: {value!r}")
+    if isinstance(value, int):
+        if 0 <= value < EXPERTISE_DIM:
+            return value
+    else:
+        normalized = str(value).strip().lower()
+        if normalized in EXPERTISE_TO_ID:
+            return EXPERTISE_TO_ID[normalized]
+    raise ValueError(f"unknown expertise rank: {value!r}")
+
+
+def expertise_vector(value: object = DEFAULT_EXPERTISE) -> np.ndarray:
+    """Encode an explicit rank as a deterministic one-hot float vector."""
+    vector = np.zeros(EXPERTISE_DIM, dtype=np.float32)
+    vector[expertise_id(value)] = 1.0
+    return vector
+
+
+def record_expertise(record: Mapping) -> np.ndarray:
+    """Read only structured expertise metadata, defaulting legacy rows to capable."""
+    raw = record.get("expertise")
+    if isinstance(raw, Mapping):
+        raw = raw.get("level", raw.get("expertise_level"))
+    if raw is None:
+        raw = record.get("expertise_level", record.get("expertise_rank"))
+    return expertise_vector(DEFAULT_EXPERTISE if raw is None else raw)
 IGNORE_INDEX = -100
 NO_SECOND_CANDIDATE = 2**31 - 1
 

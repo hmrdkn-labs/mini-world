@@ -27,6 +27,10 @@ impl EntityId {
     pub fn generation(&self) -> u32 {
         self.generation
     }
+    /// Reconstruct an id from the canonical slot/generation pair in a replay log.
+    pub fn from_parts(index: u32, generation: u32) -> Self {
+        Self { index, generation }
+    }
 }
 
 struct Slot {
