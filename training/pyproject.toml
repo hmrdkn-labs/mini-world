@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.0,<9"]
+dev = ["pytest>=9.0.3,<10"]
 
 [project.scripts]
 mw-train = "mw_training.train:main"
