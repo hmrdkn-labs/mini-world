@@ -23,6 +23,7 @@
 
 use std::time::Instant;
 
+use mw_agents::dialogue::village_card;
 use mw_agents::persona::{trait_idx, Persona, PERSONA_ONE};
 use mw_core::{agent_rng, EntityId, StreamTag, World};
 use mw_village::{
@@ -459,7 +460,8 @@ pub fn fast_forward(cfg: FfConfig) -> FfReport {
     ];
     let deaths = alive.iter().filter(|&&a| !a).count();
     let final_hash = hash_ff(&ids, &needs, &alive, &rapport, &ledger);
-    let digest = build_digest(&cfg, &ids, &needs, &rapport, &nn, &ledger);
+    let names: Vec<String> = personas.iter().map(|p| village_card(p).name).collect();
+    let digest = build_digest(&cfg, &ids, &names, &needs, &rapport, &nn, &ledger);
 
     FfReport {
         cfg,
@@ -519,10 +521,36 @@ fn hash_ff(
     h
 }
 
+fn name_of(names: &[String], id: EntityId) -> &str {
+    &names[id.index() as usize]
+}
+
+/// Needs at or above this level (of `MAX_NEED` = 1000) are not worth a line.
+const COMFORTABLE: i64 = 700;
+
+/// A word for how bad a need is: `CRISIS` and below is severe, under 400 is
+/// moderate, anything else under `COMFORTABLE` is mild.
+fn need_word(need: usize, v: i64) -> &'static str {
+    const WORDS: [[&str; 3]; 3] = [
+        ["starving", "hungry", "peckish"],
+        ["exhausted", "tired", "weary"],
+        ["desperately lonely", "lonely", "wanting company"],
+    ];
+    let level = if v < CRISIS {
+        0
+    } else if v < 400 {
+        1
+    } else {
+        2
+    };
+    WORDS[need][level]
+}
+
 /// Rank the ledger and compose the per-agent lines.
 fn build_digest(
     cfg: &FfConfig,
     ids: &[EntityId],
+    names: &[String],
     needs: &[[i64; 3]],
     rapport: &[i64],
     nn: &[Option<usize>],
@@ -559,43 +587,66 @@ fn build_digest(
         .into_iter()
         .take(cfg.top_k)
         .map(|e| {
-            let who = e.who.index();
+            let who = name_of(names, e.who);
             match e.other {
                 Some(o) => format!(
-                    "  t{:>8} {:?} agent{} <-> agent{} (imp {})",
+                    "  t{:>8} {:?} {} <-> {} (imp {})",
                     e.tick,
                     e.kind,
                     who,
-                    o.index(),
+                    name_of(names, o),
                     e.importance
                 ),
                 None => format!(
-                    "  t{:>8} {:?} agent{} (imp {})",
+                    "  t{:>8} {:?} {} (imp {})",
                     e.tick, e.kind, who, e.importance
                 ),
             }
         })
         .collect();
 
-    let names = ["hunger", "energy", "social"];
-    let per_agent = (0..ids.len())
-        .map(|a| {
-            let (need_i, need_v) = needs[a]
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, &v)| v)
-                .map(|(i, &v)| (i, v))
-                .unwrap();
-            let rel = match nn[a] {
-                Some(o) => format!("closest agent{} (rapport {})", o, rapport[a]),
-                None => "no neighbours".to_string(),
-            };
-            format!(
-                "  agent{:>3}: neediest {} {}, {}",
-                a, names[need_i], need_v, rel
-            )
+    let mut per_agent = Vec::new();
+    // Strongest bond and worst rival: the extremes of each agent's rapport toward
+    // its nearest neighbour. Ties break to the lower slot (`min_by_key` keeps the
+    // first minimum), and a relationship only counts if it has actually moved.
+    let pair = |a: usize| match nn[a] {
+        Some(o) => format!("{} and {}", names[a], names[o]),
+        None => names[a].clone(),
+    };
+    let best = (0..ids.len())
+        .filter(|&a| rapport[a] > 0)
+        .min_by_key(|&a| (-rapport[a], a));
+    if let Some(a) = best {
+        per_agent.push(format!(
+            "  strongest bond: {} (rapport {})",
+            pair(a),
+            rapport[a]
+        ));
+    }
+    let worst = (0..ids.len())
+        .filter(|&a| rapport[a] < 0)
+        .min_by_key(|&a| (rapport[a], a));
+    if let Some(a) = worst {
+        per_agent.push(format!(
+            "  worst rival: {} (rapport {})",
+            pair(a),
+            rapport[a]
+        ));
+    }
+
+    // Agents with something to report, lowest need first (slot breaks ties).
+    let mut struggling: Vec<(i64, usize, usize)> = (0..ids.len())
+        .filter_map(|a| {
+            let (i, &v) = needs[a].iter().enumerate().min_by_key(|(_, &v)| v)?;
+            (v < COMFORTABLE).then_some((v, a, i))
         })
         .collect();
+    struggling.sort_unstable();
+    per_agent.extend(
+        struggling
+            .into_iter()
+            .map(|(v, a, i)| format!("  {}: {}", names[a], need_word(i, v))),
+    );
 
     Digest { top, per_agent }
 }
