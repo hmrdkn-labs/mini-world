@@ -15,7 +15,10 @@ fn headless_view_smoke_is_deterministic_for_controller_run() {
     let first_frame = smoke_buffer(config);
     let second_frame = smoke_buffer(config);
     assert_eq!(first_frame, second_frame, "TUI smoke output diverged");
-    assert!(first_frame.contains("tick=300"), "smoke path did not drive 300 ticks");
+    assert!(
+        first_frame.contains("tick=300"),
+        "smoke path did not drive 300 ticks"
+    );
 
     // Keep an explicit standalone-controller sequence alongside the smoke path;
     // this is the hash authority that App owns for the same RunConfig.
@@ -40,6 +43,9 @@ fn headless_view_smoke_is_seed_sensitive() {
         agents: 12,
         live: false,
     };
-    let changed = ViewConfig { seed: base.seed + 1, ..base };
+    let changed = ViewConfig {
+        seed: base.seed + 1,
+        ..base
+    };
     assert_ne!(smoke_buffer(base), smoke_buffer(changed));
 }

@@ -15,9 +15,12 @@ use mw_agents::obs::N_STATS;
 use mw_agents::persona::{trait_idx, Persona};
 use mw_agents::soul::{Social, ToolSem, UtilitySoul, TOOL_SLOTS};
 use mw_core::{AgentRng, EntityId, Intent, Observation, ScenarioPack, SoulPolicy, World};
-use mw_neural::{encode, encode_omni_with_expertise, ExpertiseLevel, NeuralRuntime, NeuralSoul, OmniEncodedInput, OmniRuntime, OmniSoul};
-use mw_village::{tile_at, verb, Action, Item, Tile, VillagePack, MAX_NEED, TOOL_COUNT};
+use mw_neural::{
+    encode, encode_omni_with_expertise, ExpertiseLevel, NeuralRuntime, NeuralSoul,
+    OmniEncodedInput, OmniRuntime, OmniSoul,
+};
 use mw_runtime::{start_positions, VillageBody};
+use mw_village::{tile_at, verb, Action, Item, Tile, VillagePack, MAX_NEED, TOOL_COUNT};
 
 /// Soak parameters.
 #[derive(Clone, Copy, Debug)]
@@ -148,7 +151,6 @@ impl SoakReport {
     }
 }
 
-
 type VillageSoul = UtilitySoul<VillageBody>;
 enum AdvisoryPolicy {
     Neural(NeuralSoul),
@@ -250,7 +252,6 @@ impl NeuralSoulAdapter {
         }
     }
 
-
     fn snapshot(&mut self, world: &World) {
         self.observer.snapshot(world);
     }
@@ -345,7 +346,6 @@ impl NeuralSoulAdapter {
         }
     }
 }
-
 
 impl SoulPolicy for NeuralSoulAdapter {
     fn decide(&mut self, _obs: &Observation, _rng: &mut AgentRng) -> Intent {
@@ -451,9 +451,6 @@ impl ActiveSoul {
         }
     }
 }
-
-
-
 
 /// Village tool-scoring table, indexed by [`Action`] id. Encodes which need
 /// each tool relieves, its persona affinity, and its social role — the scenario
@@ -675,7 +672,9 @@ pub fn run_omni_cached_with_expertise(
     runtime: Option<OmniRuntime>,
 ) -> Result<(SoakReport, OmniRuntime), mw_neural::Error> {
     let run = run_neural_logged_with_runtime_expertise(cfg, model_path, true, expertise, runtime)?;
-    let runtime = run.omni_runtime.expect("OMNI runner must return its reusable runtime");
+    let runtime = run
+        .omni_runtime
+        .expect("OMNI runner must return its reusable runtime");
     Ok((run.report, runtime))
 }
 

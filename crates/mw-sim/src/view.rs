@@ -36,8 +36,8 @@ use mw_agents::dialogue::{
     ConversationLog, DialogueRenderer, FocusPoint, MockRenderer, PersonaCard, PersonaRegistry,
     SliceRegistry, Vocab,
 };
-use mw_agents::persona::Persona;
 use mw_agents::memory::OPINION_ONE;
+use mw_agents::persona::Persona;
 use mw_core::{EntityId, Event};
 use mw_runtime::{RunConfig, SimulationController};
 use mw_text::{Config, LlamaServerBackend};
@@ -216,10 +216,7 @@ impl App {
         });
         let ids = controller.agent_ids().to_vec();
         let positions = controller.positions().to_vec();
-        let personas: Vec<Persona> = ids
-            .iter()
-            .map(|&id| Persona::new(cfg.seed, id))
-            .collect();
+        let personas: Vec<Persona> = ids.iter().map(|&id| Persona::new(cfg.seed, id)).collect();
         let registry = SliceRegistry::village(&personas);
         // The live backend is expensive (spawns llama-server + model); only pay
         // for it when explicitly asked, and fall back to the mock on failure.
@@ -258,7 +255,6 @@ impl App {
             .copied()
             .unwrap_or((0, 0))
     }
-
 
     /// The focus observation predicate: the same one latent dialogue uses, sized
     /// to the director's hot radius so what the camera renders matches what the
@@ -492,7 +488,6 @@ fn actor(ev: &Event) -> EntityId {
     }
 }
 
-
 fn actor_name(ev: &Event, reg: &SliceRegistry) -> String {
     reg.card(actor(ev)).name.clone()
 }
@@ -576,7 +571,8 @@ fn render_map(f: &mut Frame, area: Rect, app: &App) {
     for (slot, &(x, y)) in app.positions.iter().enumerate() {
         if (0..GRID).contains(&x) && (0..GRID).contains(&y) {
             let idx = (y * GRID + x) as usize;
-            let better = occ[idx].is_none_or(|o| app.controller.ring(slot) > app.controller.ring(o));
+            let better =
+                occ[idx].is_none_or(|o| app.controller.ring(slot) > app.controller.ring(o));
             if better {
                 occ[idx] = Some(slot);
             }
@@ -698,7 +694,11 @@ fn render_inspector(f: &mut Frame, area: Rect, app: &App) {
         .unwrap_or_else(|| "idle".to_string());
     lines.push(Line::from(format!("last action: {last}")));
 
-    let title = format!(" Agent #{s} {} [ring={}] ", card.name, app.controller.ring(s));
+    let title = format!(
+        " Agent #{s} {} [ring={}] ",
+        card.name,
+        app.controller.ring(s)
+    );
     let p = Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL).title(title))
         .wrap(Wrap { trim: true });

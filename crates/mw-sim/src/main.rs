@@ -8,11 +8,11 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use mw_agents::dialogue::{DialogueRenderer, FocusPoint, MockRenderer};
 use mw_core::{AgentRng, Intent, KernelPack, Observation, SoulPolicy, World};
+use mw_neural::ExpertiseLevel;
+use mw_runtime::start_positions;
 use mw_sim::dialogue::{demo, LlamaDialogue, Scene};
 use mw_sim::director::{self, FfConfig, TICKS_PER_DAY};
 use mw_sim::soak::{self, SoakConfig};
-use mw_runtime::start_positions;
-use mw_neural::ExpertiseLevel;
 use mw_text::{Config, LlamaServerBackend};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -187,7 +187,6 @@ impl SoulPolicy for RandomWalk {
     }
 }
 
-
 fn run_kernel(ticks: u64, entities: i32, seed: u64) {
     let pack = KernelPack::new();
     let mut world = World::with_pack(seed, &pack);
@@ -220,13 +219,21 @@ fn run_soak(
         let omni = policy == PolicyFlag::OmniBoth;
         let comparison = match if omni {
             soak::run_ab_omni_with_expertise(
-                SoakConfig { seed, agents, ticks },
+                SoakConfig {
+                    seed,
+                    agents,
+                    ticks,
+                },
                 onnx_path,
                 expertise,
             )
         } else {
             soak::run_ab(
-                SoakConfig { seed, agents, ticks },
+                SoakConfig {
+                    seed,
+                    agents,
+                    ticks,
+                },
                 onnx_path,
             )
         } {
@@ -241,15 +248,27 @@ fn run_soak(
     }
     let report = match policy {
         PolicyFlag::Utility => Ok(soak::run_with_habits(
-            SoakConfig { seed, agents, ticks },
+            SoakConfig {
+                seed,
+                agents,
+                ticks,
+            },
             habits,
         )),
         PolicyFlag::Neural => soak::run_neural(
-            SoakConfig { seed, agents, ticks },
+            SoakConfig {
+                seed,
+                agents,
+                ticks,
+            },
             onnx_path,
         ),
         PolicyFlag::Omni => soak::run_omni_with_expertise(
-            SoakConfig { seed, agents, ticks },
+            SoakConfig {
+                seed,
+                agents,
+                ticks,
+            },
             onnx_path,
             expertise,
         ),
@@ -488,9 +507,9 @@ fn main() {
             entities,
             seed,
         } => run_kernel(ticks, entities, seed),
-        Command::Promotion { model_path } => run_promotion(
-            &std::env::var("MW_ONNX_PATH").unwrap_or(model_path),
-        ),
+        Command::Promotion { model_path } => {
+            run_promotion(&std::env::var("MW_ONNX_PATH").unwrap_or(model_path))
+        }
         Command::Soak {
             ticks,
             agents,
