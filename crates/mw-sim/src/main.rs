@@ -446,8 +446,7 @@ fn run_ff(days: u64, agents: i32, seed: u64) {
     for line in &report.digest.top {
         println!("{line}");
     }
-    println!("per-agent digest (first 8):");
-    for line in report.digest.per_agent.iter().take(8) {
+    for line in &report.digest.per_agent {
         println!("{line}");
     }
 }

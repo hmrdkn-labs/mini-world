@@ -613,25 +613,33 @@ fn build_digest(
         Some(o) => format!("{} and {}", names[a], names[o]),
         None => names[a].clone(),
     };
+    // Rapport saturates at the cap, so the extreme is usually shared: say how
+    // many relationships sit at it rather than implying a unique winner.
+    let extreme = |label: &str, pick: Option<usize>| -> Option<String> {
+        let a = pick?;
+        let tied = rapport.iter().filter(|&&r| r == rapport[a]).count();
+        let tie = if tied > 1 {
+            format!(", one of {tied} at that level")
+        } else {
+            String::new()
+        };
+        Some(format!(
+            "  {label}: {} (rapport {}{tie})",
+            pair(a),
+            rapport[a]
+        ))
+    };
     let best = (0..ids.len())
         .filter(|&a| rapport[a] > 0)
         .min_by_key(|&a| (-rapport[a], a));
-    if let Some(a) = best {
-        per_agent.push(format!(
-            "  strongest bond: {} (rapport {})",
-            pair(a),
-            rapport[a]
-        ));
-    }
     let worst = (0..ids.len())
         .filter(|&a| rapport[a] < 0)
         .min_by_key(|&a| (rapport[a], a));
-    if let Some(a) = worst {
-        per_agent.push(format!(
-            "  worst rival: {} (rapport {})",
-            pair(a),
-            rapport[a]
-        ));
+    per_agent.push("relationships:".to_string());
+    per_agent.extend(extreme("strongest bond", best));
+    per_agent.extend(extreme("worst rival", worst));
+    if best.is_none() && worst.is_none() {
+        per_agent.push("  no notable relationships".to_string());
     }
 
     // Agents with something to report, lowest need first (slot breaks ties).
@@ -642,11 +650,16 @@ fn build_digest(
         })
         .collect();
     struggling.sort_unstable();
-    per_agent.extend(
-        struggling
-            .into_iter()
-            .map(|(v, a, i)| format!("  {}: {}", names[a], need_word(i, v))),
-    );
+    if struggling.is_empty() {
+        per_agent.push(format!("needs: all {} villagers comfortable", ids.len()));
+    } else {
+        per_agent.push("needs:".to_string());
+        per_agent.extend(
+            struggling
+                .into_iter()
+                .map(|(v, a, i)| format!("  {}: {}", names[a], need_word(i, v))),
+        );
+    }
 
     Digest { top, per_agent }
 }
