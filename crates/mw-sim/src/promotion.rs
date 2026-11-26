@@ -245,7 +245,7 @@ impl PromotionConfig {
         if self.seeds.is_empty() {
             return Err(PromotionError::InvalidConfig("seed set is empty"));
         }
-        if self.seeds.iter().any(|seed| *seed == 7) {
+        if self.seeds.contains(&7) {
             return Err(PromotionError::InvalidConfig(
                 "pilot seed 7 is not allowed in promotion evaluation",
             ));

@@ -600,7 +600,7 @@ impl Director {
     fn should_run_soul(&self, slot: usize, tick: u64) -> bool {
         match self.ring[slot] {
             Ring::Hot => true,
-            Ring::Warm => self.cfg.warm_cadence == 0 || tick % self.cfg.warm_cadence == 0,
+            Ring::Warm => self.cfg.warm_cadence == 0 || tick.is_multiple_of(self.cfg.warm_cadence),
             Ring::Cold => false,
         }
     }
