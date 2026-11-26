@@ -1273,7 +1273,7 @@ mod tests {
             return;
         }
         let pack = KernelPack::new();
-        let mut soul =
+        let soul =
             OmniSoul::load_tier(LADDER_ROOT, OmniTier::Tier0, pack.manifest().clone()).unwrap();
         let persona = Persona {
             traits: [500; 5],
