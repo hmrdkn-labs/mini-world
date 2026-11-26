@@ -139,7 +139,7 @@ Promotion is simulator behavior, not action match alone: the deterministic 8-tic
 ### 6. TEXT model
 One shared instruct model, Q4, never in the tick loop, priority-queued (player-facing > ambient > AFK digests).
 
-- **Pick: Qwen3-0.6B, Q4_0 = 364MB file** ([HF](https://huggingface.co/unsloth/Qwen3-0.6B-GGUF)); alternatives: Gemma3-270M Q4 ≈ 230MB, Gemma3-1B / Llama-3.2-1B Q4 ≈ 690–770MB. Runtime RSS > file size (KV cache etc.).
+- **Pick: Qwen3-0.6B, Q4_0 = 364.5 MiB file (382,156,480 bytes)** ([HF](https://huggingface.co/unsloth/Qwen3-0.6B-GGUF)); alternatives: Gemma3-270M Q4 ≈ 230MB, Gemma3-1B / Llama-3.2-1B Q4 ≈ 690–770MB. Runtime RSS > file size (KV cache etc.).
 - Measured phone decode: TinyLlama 1.1B Q4_0 on llama.cpp/Metal: A14 39 → A17 Pro 57 → A19 87 tok/s ([official bench, 2023 baseline](https://github.com/ggml-org/llama.cpp/discussions/4508)); Qwen2.5-0.5B int8 ~30 tok/s on S24 Ultra CPU ([LiteRT card](https://huggingface.co/litert-community/Qwen2.5-0.5B-Instruct)). Vendor "100+ tok/s NPU" claims: unverified marketing.
 - Persona/act conditioning: system prompt from genome (baseline); **prefix/control-vector steering** as the upgrade path — Dialogue Action Tokens showed a tiny MLP steering a frozen LM via 2 prefix tokens beats GPT-4 on social benchmarks ([arXiv:2406.11978](https://arxiv.org/abs/2406.11978)); llama.cpp ships `--control-vector` natively.
 
@@ -192,29 +192,29 @@ Deterministic kernel + one village scenario, ~50 agents, utility-AI SOUL stub, o
 
 ## Implementation status (v0 and v0.5)
 
-**Verified 2026-07-13.** The vertical slice shipped with a deterministic integer kernel, one village scenario and ~50-agent utility-AI SOUL loop, persona and memory state, shared Qwen3-0.6B Q4_0 TEXT rendering, latent dialogue, live hot/warm/cold LOD, analytic AFK fast-forward with a returning-player digest, replay, and a Ratatui viewer with a headless smoke path. POST-REVIEW v0.5 adds feeding calibration, directional opinions, asynchronous TUI rendering, stale-server reaping, pack-derived fast-forward constants, and a deterministic per-character habit cache. No trained SOUL model is included; the utility policy occupies the production `SoulPolicy` socket.
+**Verified 2026-07-13; measured numbers re-run 2026-11-26.** The vertical slice shipped with a deterministic integer kernel, one village scenario and ~50-agent utility-AI SOUL loop, persona and memory state, shared Qwen3-0.6B Q4_0 TEXT rendering, latent dialogue, live hot/warm/cold LOD, analytic AFK fast-forward with a returning-player digest, replay, and a Ratatui viewer with a headless smoke path. POST-REVIEW v0.5 adds feeding calibration, directional opinions, asynchronous TUI rendering, stale-server reaping, pack-derived fast-forward constants, and a deterministic per-character habit cache. A loopback-only browser observatory (`mw-host` + `web/`) has since shipped. No trained SOUL model is included; the utility policy occupies the production `SoulPolicy` socket, and the default run renders dialogue with an offline mock unless `MW_TEXT_LIVE=1`.
 
-Measured gates:
+Measured gates (re-run 2026-11-26 on an Apple M5, shared machine, load average about 3–4, release build, branch `phase-a`; commands and fuller tables in [README.md](README.md#measured-results)):
 
 | Area | Result |
 | --- | --- |
 | Determinism/replay | Same seed, 10,000 ticks: identical hash. Replay from `(seed, intent log)`, including `FfSegment` entries, reproduces the full state hash including pack state. Habit-enabled runs are deterministic; habit policy state is intentionally outside kernel hash state. |
-| Live village | 50 agents at 12,893 ticks/s in release on an M4 Pro; maximum action-histogram share 37.9% in the v0 measurement. |
-| POST-REVIEW health | 0 starvation deaths across 50 seeds × 10,000 ticks (earlier v0 emergent result: 8/50); eat share 2.4–2.9%. |
-| Habit cache | Honest hit rate 51.7% in the 50×10k soak and 50.7% in the 86,400-tick demo; 2,151 ticks/s habits-on versus 1,088 ticks/s off at 50×10k; deaths 0, deterministic hashes, and per-character divergence gate green. Speak/Give passthrough, urgency invalidation, and bounded TTLs preserve social behavior. |
-| Analytic FF | 604,800 ticks in 0.014 s (~43M ticks/s); drift versus the hot reference ≤4% under the 15% bound; digest deterministic. Analytic gains are read from village pack constants, with no duplicate calibration constants. |
+| Live village | 50 agents, 86,400 ticks: 17,640 ticks/s (`bash scripts/demo.sh`). 50×10,000, seed 1: 19,447 ticks/s habits on, 15,569 habits off (`mw-sim soak --habits on\|off`). The earlier "12,893 ticks/s on an M4 Pro" and "37.9% maximum action share" figures are withdrawn (different machine, not reproducible here). Largest action share at seed 1: 32.7% habits on, 60.0% habits off. |
+| Health, 50 seeds × 10,000 ticks | Habits off: 0 starvation deaths in 50 seeds, eat share 2.3–2.8%. Habits on (default): 0 deaths in 49 seeds, but seed 22 loses 44 of 50 agents (deterministic). The earlier "0 deaths across 50 seeds" with habits on is withdrawn. |
+| Habit cache | Hit rate 44.7% (50×10k, seed 1) and 44.3% (86,400-tick demo day); 14.0%–54.9% across 50 seeds, mean 47.3%. Habits on versus off: 19,447 versus 15,569 ticks/s at seed 1 (about 1.25×, not 2×); 50-seed means 16,578 versus 12,059. The earlier 51.7% / 50.7% / 2,151 / 1,088 figures are withdrawn. Speak/Give passthrough, urgency invalidation, and bounded TTLs are as designed. |
+| Analytic FF | 604,800 ticks in 0.014–0.024 s (25.7M–44.4M ticks/s, three runs; 0.015 s in the demo); drift versus the hot reference 5.3%–7.4% (debug-build test) under the 15% bound; digest deterministic. Analytic gains are read from village pack constants, with no duplicate calibration constants. |
 | Opinions, viewer, and server lifecycle | Opinion deltas are asymmetric and directional; live TEXT rendering is asynchronous; stale `llama-server` processes are reaped on startup. PID-reuse handling is narrowed but its TOCTOU is not atomic. |
-| TEXT | Qwen3-0.6B Q4_0, 364.5 MiB file via llama.cpp; warm render 79 ms; KV-slot reuse reduces prompt tokens 104 → 1. Fresh M4 Pro bake-off (llama.cpp b9960-a935fbffe, llama-bench, 3 reps, pp512/tg128): Metal 3,136.8 / 180.2 t/s; CPU-only 373.7 / 70.2 t/s. |
+| TEXT | Qwen3-0.6B Q4_0 GGUF is 382,156,480 bytes (364.5 MiB; `llama-bench` reports 358.78 MiB, tensor data only). llama.cpp 0.9.0 build 12110 on the M5: pp512 8,242 t/s and tg128 213 t/s (default backends), 318 / 125 t/s with `-ngl 0` (still a BLAS/Metal build, not clean CPU-only); warm render 88 ms; KV-slot reuse reduces prompt tokens 104 → 1. |
 | Latent dialogue | Unobserved conversations make 0 `TextBackend` calls while relationship deltas apply; retroactive backfill is act-coherent and cached; text is one-way and never mutates sim state. |
-| Gates/viewer | 58 tests green after the v0.5 review; `clippy -D warnings`, formatting, and `scripts/demo.sh` are clean; Ratatui TUI was verified in a real PTY and `view --smoke` exits 0 headless. |
+| Gates/viewer | `cargo test --workspace`: 102 passed, 0 failed, 5 ignored (opt-in live-model tests); 10 of the 102 print `skipped: … not present` and pass without the untracked ONNX model files. `scripts/demo.sh` exits 0; Ratatui TUI was verified in a real PTY and `view --smoke` exits 0 headless. |
 
 ### Viewer surfaces
 
 **Current:** the shipped interactive surface is the Ratatui/crossterm viewer. `mw-sim::view::App` owns the live `World`, `VillagePack`, SOUL, Director, conversation ledger, asynchronous TEXT worker, and UI state. Its fast-forward key currently opens a report-only popup and does not mutate the live viewer world.
 
-**Planned:** a browser simulation observatory and control surface is future work. No server, frontend, or web assets exist today. The implementation-ready first slice is exactly Phase 0 shared `SimulationController`/TUI hash parity followed by Phase 1 loopback JSON HTTP + SSE: minimal SnapshotV1, authoritative CapabilitiesV1, only `step {ticks:1}`, SSE reconnect, and an accessible 16x16 Canvas 2D + DOM projection. It uses one actor-owned simulation authority; the browser is never a second world. See the [browser simulation layer plan](docs/web-ui-simulation-plan.md).
+**Browser observatory (shipped, minimal):** a loopback-only browser observatory and control surface ships as `mw-host` (actor thread owning the `SimulationController`, JSON HTTP + SSE on `127.0.0.1`, default port 7878) and `web/` (React/Vite, Canvas 2D + DOM projection). It exposes minimal SnapshotV1, authoritative CapabilitiesV1, only `step {ticks:1}`, SSE reconnect, and a 16x16 map. It is run as two processes (`cargo run --release -p mw-host`, `cd web && npm run dev`); there is no one-command launcher, and no names, inspector, dialogue, or speed control in the browser yet. It uses one actor-owned simulation authority; the browser is never a second world. See the [browser simulation layer plan](docs/web-ui-simulation-plan.md).
 
-### TEXT bake-off (M4 Pro, 2026-07-15)
+### TEXT bake-off (M4 Pro, 2026-07-15; historical)
 
 The repeatable command is `REPS=3 scripts/bench_text.sh`; it downloads missing GGUFs into `~/.cache/mini-world/models`, runs `llama-bench` with Metal and `-ngl 0` CPU paths, and records `/usr/bin/time -l` maximum RSS. Prompt/decode columns are pp512/tg128 averages over three repetitions; RSS is the real process maximum, not the quantized file size.
 
@@ -224,7 +224,7 @@ The repeatable command is `REPS=3 scripts/bench_text.sh`; it downloads missing G
 | Qwen3.5-0.8B Q4_0 (hybrid Gated-DeltaNet + MoE) | 2,754.8 / 115.1 | 284.8 / 39.1 | 483.7 | 637.4 / 1,156.2 | loaded |
 | Gemma3-270M it Q4_K_M (floor) | 15,186.5 / 159.8 | 726.9 / 90.8 | 241.4 | 336.6 / 551.6 | loaded |
 
-All three candidates load and run on this llama.cpp build. Qwen3.5's hybrid architecture is therefore not a load blocker here, but runtime maturity is explicitly provisional: its decode is 36% slower than Qwen3 on Metal and 44% slower on CPU, while file size is 33% larger and CPU RSS is 28% higher. Its chat template also needed `chat_template_kwargs.enable_thinking=false`; otherwise the identical smoke request spent its 48-token budget in visible reasoning rather than dialogue.
+Only the Qwen3-0.6B row was re-run on 2026-11-26 (M5; see the TEXT row above). The Qwen3.5 and Gemma3 rows were not re-run and remain M4 Pro results from 2026-07-15. All three candidates loaded and ran on that llama.cpp build. Qwen3.5's hybrid architecture is therefore not a load blocker there, but runtime maturity is explicitly provisional: its decode is 36% slower than Qwen3 on Metal and 44% slower on CPU, while file size is 33% larger and CPU RSS is 28% higher. Its chat template also needed `chat_template_kwargs.enable_thinking=false`; otherwise the identical smoke request spent its 48-token budget in visible reasoning rather than dialogue.
 
 Identical OpenAI-message dialogue smoke (Metal, seed 1, temperature 0.7, `/no_think`, `enable_thinking=false`) produced:
 
@@ -236,7 +236,7 @@ Identical OpenAI-message dialogue smoke (Metal, seed 1, temperature 0.7, `/no_th
 
 **Recommendation:** keep **Qwen3-0.6B Q4_0 as the default TEXT tier**: it is materially faster than Qwen3.5 at decode, smaller, and lower-RSS while producing a usable smoke line. Use **Gemma3-270M Q4_K_M as the floor tier** for constrained devices: its 241.4 MiB file and 336.6 MiB Metal RSS are the lowest by a wide margin, and its 15,186.5 tok/s prompt path is useful for short latent-dialogue prompts, accepting weaker rendering quality and slightly slower decode than Qwen3 on this run. Do not promote Qwen3.5 to default until hybrid-architecture runtime behavior is re-benchmarked on the target llama.cpp release.
 
-The earlier 82.7% habit hit rate was pre-fix telemetry: cache accounting counted behavior that could suppress social scoring, and the first implementation allowed social lockout. The review made the telemetry truthful and always re-scored Speak/Give; 51.7% (soak) and 50.7% (demo) are the honest measurements.
+The earlier 82.7% habit hit rate was pre-fix telemetry: cache accounting counted behavior that could suppress social scoring, and the first implementation allowed social lockout. The review made the telemetry truthful and always re-scored Speak/Give. The 51.7% (soak) and 50.7% (demo) figures reported at the time did not reproduce on 2026-11-26; the re-measured values are 44.7% and 44.3% (table above).
 
 ### Ratified v0 contract changes
 
@@ -256,7 +256,7 @@ The earlier 82.7% habit hit rate was pre-fix telemetry: cache accounting counted
 
 ## Browser layer decision
 
-The browser layer is explicitly planned, not observed. The selected implementation is Rust host actor + loopback HTTP/SSE + JSON + React/TypeScript/Vite, with Canvas 2D and a DOM mirror. Phase 0 proves shared-controller/hash parity; Phase 1 exposes only minimal snapshot, authoritative capabilities, one-tick stepping, SSE reconnect, keyboard selection, status, and reduced motion. The plan resolves command ordering, idempotency, actor/TEXT multiplexing, fixed run provenance, ControlLogV1, authoritative versus seed+ControlLog replay, string encoding for every Rust `u64`, DTO-family versioning, and the synchronous HTTP 200/oneshot boundary. Pause/resume, fast-forward, focus, multi-step, inspector/detail fields, dialogue/TEXT backfill, policy hot-swap, reset/reseed, WebSocket, binary deltas, WASM, and remote exposure are deferred.
+The browser layer ships in minimal form (see "Viewer surfaces"). The selected implementation is Rust host actor + loopback HTTP/SSE + JSON + React/TypeScript/Vite, with Canvas 2D and a DOM mirror. Phase 0 proves shared-controller/hash parity; Phase 1 exposes only minimal snapshot, authoritative capabilities, one-tick stepping, SSE reconnect, keyboard selection, status, and reduced motion. The plan resolves command ordering, idempotency, actor/TEXT multiplexing, fixed run provenance, ControlLogV1, authoritative versus seed+ControlLog replay, string encoding for every Rust `u64`, DTO-family versioning, and the synchronous HTTP 200/oneshot boundary. Pause/resume, fast-forward, focus, multi-step, inspector/detail fields, dialogue/TEXT backfill, policy hot-swap, reset/reseed, WebSocket, binary deltas, WASM, and remote exposure are deferred.
 
 ## Remaining research questions
 

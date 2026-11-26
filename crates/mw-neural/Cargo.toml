@@ -3,6 +3,7 @@ name = "mw-neural"
 version.workspace = true
 edition.workspace = true
 publish = false
+license.workspace = true
 
 [dependencies]
 mw-agents = { path = "../mw-agents" }
