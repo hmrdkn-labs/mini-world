@@ -874,11 +874,16 @@ mod tests {
 
     struct SlowMockTextBackend {
         calls: std::sync::Arc<AtomicUsize>,
+        release: std::sync::Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl RenderBackend for SlowMockTextBackend {
         fn render(&mut self, job: &RenderJob) -> String {
-            std::thread::sleep(Duration::from_millis(500));
+            // Gated on a flag rather than a fixed sleep so the test does not depend on machine load.
+            let give_up = Instant::now() + Duration::from_secs(30);
+            while !self.release.load(Ordering::Acquire) && Instant::now() < give_up {
+                std::thread::sleep(Duration::from_millis(5));
+            }
             self.calls.fetch_add(1, Ordering::Relaxed);
             format!("{} to {}: rendered", job.speaker.name, job.listener.name)
         }
@@ -887,6 +892,7 @@ mod tests {
     #[test]
     fn slow_render_does_not_block_frames_and_caches_response() {
         let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut app = App::new(ViewConfig {
             seed: 7,
             agents: 2,
@@ -896,6 +902,7 @@ mod tests {
             &mut app.renderer,
             RenderWorker::new(SlowMockTextBackend {
                 calls: std::sync::Arc::clone(&calls),
+                release: std::sync::Arc::clone(&release),
             }),
         );
         drop(old);
@@ -909,9 +916,9 @@ mod tests {
         }]);
         assert!(app.request_render(0, RenderSource::Backfill));
 
-        let start = Instant::now();
+        // The render is held pending, so frames must keep being produced without it.
         let mut frames = 0;
-        while start.elapsed() < Duration::from_millis(250) {
+        while frames < 5 {
             app.poll_renders();
             let backend = TestBackend::new(110, 44);
             let mut term = Terminal::new(backend).expect("test backend");
@@ -920,11 +927,11 @@ mod tests {
             frames += 1;
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert!(frames >= 4, "frames={frames}");
         assert!(app.log.rows()[0].text.is_none());
         assert_eq!(calls.load(Ordering::Relaxed), 0);
 
-        let deadline = Instant::now() + Duration::from_secs(2);
+        release.store(true, Ordering::Release);
+        let deadline = Instant::now() + Duration::from_secs(10);
         while app.log.rows()[0].text.is_none() && Instant::now() < deadline {
             app.poll_renders();
             std::thread::sleep(Duration::from_millis(10));

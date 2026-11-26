@@ -845,9 +845,22 @@ mod neural_tests {
     use super::*;
 
     const MODEL: &str = "../../training/artifacts/model.onnx";
+    const OMNI_MODEL: &str = "../../training/artifacts/ladder/tier-0/model.onnx";
+
+    /// Untracked model files are absent on a fresh clone; tests that need them skip.
+    fn require(path: &str) -> bool {
+        let present = std::path::Path::new(path).exists();
+        if !present {
+            eprintln!("skipped: {path} not present");
+        }
+        present
+    }
 
     #[test]
     fn neural_same_seed_same_final_hash() {
+        if !require(MODEL) {
+            return;
+        }
         let cfg = SoakConfig {
             seed: 7,
             agents: 8,
@@ -861,12 +874,14 @@ mod neural_tests {
 
     #[test]
     fn omni_same_seed_same_final_hash() {
+        if !require(OMNI_MODEL) {
+            return;
+        }
         let cfg = SoakConfig {
             seed: 7,
             agents: 8,
             ticks: 40,
         };
-        const OMNI_MODEL: &str = "../../training/artifacts/ladder/tier-0/model.onnx";
         assert_eq!(
             run_omni(cfg, OMNI_MODEL).unwrap().final_hash,
             run_omni(cfg, OMNI_MODEL).unwrap().final_hash
@@ -875,6 +890,9 @@ mod neural_tests {
 
     #[test]
     fn neural_intent_log_replay_reproduces_hash() {
+        if !require(MODEL) {
+            return;
+        }
         let cfg = SoakConfig {
             seed: 17,
             agents: 8,

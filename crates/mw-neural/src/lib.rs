@@ -997,6 +997,22 @@ impl SoulPolicy for OmniSoul {
 
 #[cfg(test)]
 mod tests {
+    const BUNDLED_MODEL: &str = "../../training/artifacts/model.onnx";
+    const BUNDLED_NORM: &str = "../../training/artifacts/norm_stats.json";
+    const BUNDLED_FIXTURES: &str = "../../training/artifacts/fixtures.json";
+    const LADDER_ROOT: &str = "../../training/artifacts/ladder";
+
+    /// Untracked model files are absent on a fresh clone; tests that need them skip.
+    fn require(paths: &[&str]) -> bool {
+        match paths.iter().find(|p| !std::path::Path::new(p).exists()) {
+            Some(missing) => {
+                eprintln!("skipped: {missing} not present");
+                false
+            }
+            None => true,
+        }
+    }
+
     use super::*;
     use mw_core::{agent_rng, stream, Intent, KernelPack, ScenarioPack, SoulPolicy, World};
     use mw_agents::obs::NeighborView;
@@ -1085,11 +1101,10 @@ mod tests {
     }
     #[test]
     fn bundled_model_loads_and_runs() {
-        let rt = NeuralRuntime::load(
-            "../../training/artifacts/model.onnx",
-            "../../training/artifacts/norm_stats.json",
-        )
-        .unwrap();
+        if !require(&[BUNDLED_MODEL, BUNDLED_NORM]) {
+            return;
+        }
+        let rt = NeuralRuntime::load(BUNDLED_MODEL, BUNDLED_NORM).unwrap();
         let p = Persona {
             traits: [500; 5],
             weights: [500; 3],
@@ -1112,11 +1127,10 @@ mod tests {
     }
     #[test]
     fn neural_soul_implements_policy_socket() {
-        let mut soul = NeuralSoul::load(
-            "../../training/artifacts/model.onnx",
-            "../../training/artifacts/norm_stats.json",
-        )
-        .unwrap();
+        if !require(&[BUNDLED_MODEL, BUNDLED_NORM]) {
+            return;
+        }
+        let mut soul = NeuralSoul::load(BUNDLED_MODEL, BUNDLED_NORM).unwrap();
         let mut world = World::new(7);
         let id = world.spawn((0, 0));
         let mut observation = world.observe(id);
@@ -1142,16 +1156,14 @@ mod tests {
 
     #[test]
     fn python_onnxruntime_fixture_matches_tract() {
+        if !require(&[BUNDLED_MODEL, BUNDLED_NORM, BUNDLED_FIXTURES]) {
+            return;
+        }
         let fixtures: FixtureFile =
-            serde_json::from_slice(&fs::read("../../training/artifacts/fixtures.json").unwrap())
-                .unwrap();
+            serde_json::from_slice(&fs::read(BUNDLED_FIXTURES).unwrap()).unwrap();
         assert_eq!(fixtures.schema_version, 1);
         assert_eq!(fixtures.records.len(), 32);
-        let rt = NeuralRuntime::load(
-            "../../training/artifacts/model.onnx",
-            "../../training/artifacts/norm_stats.json",
-        )
-        .unwrap();
+        let rt = NeuralRuntime::load(BUNDLED_MODEL, BUNDLED_NORM).unwrap();
         for fixture in &fixtures.records {
             assert_eq!(fixture.raw_features.len(), FEATURE_DIM);
             for ((raw, expected), (mean, std)) in fixture
@@ -1203,11 +1215,10 @@ mod tests {
 
     #[test]
     fn bundled_model_supports_one_tick_batch() {
-        let rt = NeuralRuntime::load(
-            "../../training/artifacts/model.onnx",
-            "../../training/artifacts/norm_stats.json",
-        )
-        .unwrap();
+        if !require(&[BUNDLED_MODEL, BUNDLED_NORM]) {
+            return;
+        }
+        let rt = NeuralRuntime::load(BUNDLED_MODEL, BUNDLED_NORM).unwrap();
         let p = Persona {
             traits: [500; 5],
             weights: [500; 3],
@@ -1230,11 +1241,10 @@ mod tests {
     }
     #[test]
     fn repeated_cpu_inference_is_bit_identical() {
-        let rt = NeuralRuntime::load(
-            "../../training/artifacts/model.onnx",
-            "../../training/artifacts/norm_stats.json",
-        )
-        .unwrap();
+        if !require(&[BUNDLED_MODEL, BUNDLED_NORM]) {
+            return;
+        }
+        let rt = NeuralRuntime::load(BUNDLED_MODEL, BUNDLED_NORM).unwrap();
         let p = Persona {
             traits: [500; 5],
             weights: [500; 3],
@@ -1256,13 +1266,15 @@ mod tests {
     }
     #[test]
     fn best_ladder_tier_loads_through_omni_soul() {
+        if !require(&[
+            "../../training/artifacts/ladder/tier-0/model.onnx",
+            "../../training/artifacts/ladder/tier-0/norm_stats.json",
+        ]) {
+            return;
+        }
         let pack = KernelPack::new();
-        let mut soul = OmniSoul::load_tier(
-            "../../training/artifacts/ladder",
-            OmniTier::Tier0,
-            pack.manifest().clone(),
-        )
-        .unwrap();
+        let mut soul =
+            OmniSoul::load_tier(LADDER_ROOT, OmniTier::Tier0, pack.manifest().clone()).unwrap();
         let persona = Persona {
             traits: [500; 5],
             weights: [500; 3],

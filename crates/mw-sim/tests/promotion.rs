@@ -5,6 +5,10 @@ use mw_sim::promotion::{self, PromotionConfig};
 #[test]
 fn tier0_omni_runs_against_utility_on_a_bounded_heldout_world() {
     let model = "../../training/artifacts/ladder/tier-0/model.onnx";
+    if !std::path::Path::new(model).exists() {
+        eprintln!("skipped: {model} not present");
+        return;
+    }
     let config = PromotionConfig {
         seeds: &[101],
         agents: 2,
