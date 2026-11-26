@@ -45,7 +45,6 @@ pub struct RunProvenanceDto {
     pub expertise: String,
 }
 
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScenarioDto {
     pub id: String,
@@ -198,7 +197,10 @@ impl CapabilitiesV1 {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EventPayload {
-    Moved { actor: AgentIdDto, to: [i32; 2] },
+    Moved {
+        actor: AgentIdDto,
+        to: [i32; 2],
+    },
     Interacted {
         actor: AgentIdDto,
         target: AgentIdDto,
@@ -214,7 +216,9 @@ pub enum EventPayload {
         actor: AgentIdDto,
         reason: String,
     },
-    StepApplied { command_id: String },
+    StepApplied {
+        command_id: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -273,7 +277,11 @@ impl EventV1 {
                 },
                 *tick,
             ),
-            Event::Rejected { tick, actor, reason } => (
+            Event::Rejected {
+                tick,
+                actor,
+                reason,
+            } => (
                 "rejected",
                 EventPayload::Rejected {
                     actor: (*actor).into(),
@@ -526,7 +534,10 @@ mod tests {
         let capabilities = CapabilitiesV1::for_run("local-01", &provenance, ScenarioDto::village());
         assert_eq!(capabilities.commands.len(), 1);
         assert_eq!(capabilities.commands[0].command_type, "step");
-        assert_eq!(capabilities.commands[0].ticks, StepLimits { min: 1, max: 1 });
+        assert_eq!(
+            capabilities.commands[0].ticks,
+            StepLimits { min: 1, max: 1 }
+        );
         assert_eq!(capabilities.dto_versions, DtoVersions::V1);
         assert_eq!(capabilities.schema_version, WEB_DTO_VERSION);
     }

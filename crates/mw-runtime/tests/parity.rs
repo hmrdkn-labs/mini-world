@@ -88,10 +88,22 @@ impl TestDirector {
 
 fn tool_table() -> Vec<ToolSem> {
     let mut table = vec![ToolSem::default(); TOOL_SLOTS];
-    table[Action::Move as usize] = ToolSem { is_move: true, ..Default::default() };
-    table[Action::Eat as usize] = ToolSem { relieves: Some((0, 1000)), ..Default::default() };
-    table[Action::Sleep as usize] = ToolSem { relieves: Some((1, 1000)), ..Default::default() };
-    table[Action::Work as usize] = ToolSem { bias: Some(trait_idx::INDUSTRIOUSNESS), ..Default::default() };
+    table[Action::Move as usize] = ToolSem {
+        is_move: true,
+        ..Default::default()
+    };
+    table[Action::Eat as usize] = ToolSem {
+        relieves: Some((0, 1000)),
+        ..Default::default()
+    };
+    table[Action::Sleep as usize] = ToolSem {
+        relieves: Some((1, 1000)),
+        ..Default::default()
+    };
+    table[Action::Work as usize] = ToolSem {
+        bias: Some(trait_idx::INDUSTRIOUSNESS),
+        ..Default::default()
+    };
     table[Action::Speak as usize] = ToolSem {
         relieves: Some((2, 1000)),
         social: Social::Befriend,
@@ -104,11 +116,26 @@ fn tool_table() -> Vec<ToolSem> {
         needs_adjacent: true,
         ..Default::default()
     };
-    table[Action::Pickup as usize] = ToolSem { bias: Some(trait_idx::GREED), ..Default::default() };
-    table[Action::Use as usize] = ToolSem { relieves: Some((1, 300)), ..Default::default() };
-    table[Action::Follow as usize] = ToolSem { social: Social::Befriend, ..Default::default() };
-    table[Action::Flee as usize] = ToolSem { social: Social::Flee, ..Default::default() };
-    table[Action::Idle as usize] = ToolSem { base: 40, ..Default::default() };
+    table[Action::Pickup as usize] = ToolSem {
+        bias: Some(trait_idx::GREED),
+        ..Default::default()
+    };
+    table[Action::Use as usize] = ToolSem {
+        relieves: Some((1, 300)),
+        ..Default::default()
+    };
+    table[Action::Follow as usize] = ToolSem {
+        social: Social::Befriend,
+        ..Default::default()
+    };
+    table[Action::Flee as usize] = ToolSem {
+        social: Social::Flee,
+        ..Default::default()
+    };
+    table[Action::Idle as usize] = ToolSem {
+        base: 40,
+        ..Default::default()
+    };
     table
 }
 
@@ -164,7 +191,9 @@ fn direct_step(
         );
     }
     soul.inner_mut().snapshot(world);
-    world.step_gated(&**pack, soul, |id, tick| director.should_run_soul(id.index() as usize, tick));
+    world.step_gated(&**pack, soul, |id, tick| {
+        director.should_run_soul(id.index() as usize, tick)
+    });
     let end = world.event_log().len();
     let events = &world.event_log()[*last_events..end];
     *last_events = end;
@@ -190,10 +219,19 @@ fn direct_pipeline(config: RunConfig) -> (Vec<u64>, u64) {
     let pack = Rc::new(VillagePack::new());
     let mut world = World::with_pack(config.seed, &*pack);
     let positions = start_positions(config.agents);
-    let ids: Vec<EntityId> = positions.iter().map(|&position| world.spawn(position)).collect();
-    let personas: Vec<Persona> = ids.iter().map(|&id| Persona::new(config.seed, id)).collect();
+    let ids: Vec<EntityId> = positions
+        .iter()
+        .map(|&position| world.spawn(position))
+        .collect();
+    let personas: Vec<Persona> = ids
+        .iter()
+        .map(|&id| Persona::new(config.seed, id))
+        .collect();
     let factions: Vec<u8> = personas.iter().map(Persona::faction).collect();
-    let memories: Vec<Memory> = ids.iter().map(|&id| Memory::new(id, verb_affect())).collect();
+    let memories: Vec<Memory> = ids
+        .iter()
+        .map(|&id| Memory::new(id, verb_affect()))
+        .collect();
     let utility = UtilitySoul::new(
         VillageBody::new(Rc::clone(&pack), factions),
         tool_table(),
@@ -241,9 +279,15 @@ fn direct_and_controller_hashes_match_at_every_checkpoint() {
         controller_hashes.push(outcome.state_hash);
     }
     let (direct_hashes, direct_final) = direct_pipeline(config);
-    assert_eq!(controller_hashes, direct_hashes, "direct/controller hash sequences diverged");
+    assert_eq!(
+        controller_hashes, direct_hashes,
+        "direct/controller hash sequences diverged"
+    );
     for tick in [0usize, 50, 100, 150, 200] {
-        assert_eq!(controller_hashes[tick], direct_hashes[tick], "diverged at tick {tick}");
+        assert_eq!(
+            controller_hashes[tick], direct_hashes[tick],
+            "diverged at tick {tick}"
+        );
     }
     assert_eq!(controller_hashes[200], direct_final);
 }
@@ -261,10 +305,16 @@ fn controllers_are_deterministic_and_seed_sensitive() {
         assert_eq!(first.step_one().state_hash, second.step_one().state_hash);
     }
     let final_hash = first.state_hash();
-    let mut different = SimulationController::new(RunConfig { seed: config.seed + 1, ..config });
+    let mut different = SimulationController::new(RunConfig {
+        seed: config.seed + 1,
+        ..config
+    });
     for _ in 0..200 {
         different.step_one();
     }
     assert_ne!(final_hash, different.state_hash());
-    eprintln!("runtime parity seed={} final_hash=0x{final_hash:016x}", config.seed);
+    eprintln!(
+        "runtime parity seed={} final_hash=0x{final_hash:016x}",
+        config.seed
+    );
 }

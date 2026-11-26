@@ -5,7 +5,6 @@
 //! thread, then copy out [`TickOutcome`] and [`RunSnapshot`] projections.
 pub mod dto;
 
-
 use std::rc::Rc;
 
 use mw_agents::habits::{HabitContext, HabitSoul};
@@ -147,7 +146,8 @@ impl SimulationController {
         let tick = self.world.tick();
         for event in &events {
             if is_notable(event) {
-                self.director.note_event(actor(event).index() as usize, tick);
+                self.director
+                    .note_event(actor(event).index() as usize, tick);
             }
         }
         self.soul.inner_mut().decay_opinions();
@@ -219,9 +219,11 @@ impl SimulationController {
             .ids
             .iter()
             .copied()
-            .zip(self.ids.iter().map(|&id| {
-                self.world.entity(id).map_or((0, 0), |entity| entity.pos)
-            }))
+            .zip(
+                self.ids
+                    .iter()
+                    .map(|&id| self.world.entity(id).map_or((0, 0), |entity| entity.pos)),
+            )
             .collect();
         RunSnapshot {
             seed: self.world.seed(),
@@ -330,13 +332,7 @@ impl Body for VillageBody {
             .unwrap_or(0)
     }
 
-    fn to_intent(
-        &self,
-        entity: EntityId,
-        tick: u64,
-        from: (i32, i32),
-        choice: &Choice,
-    ) -> Intent {
+    fn to_intent(&self, entity: EntityId, tick: u64, from: (i32, i32), choice: &Choice) -> Intent {
         let Some(action) = Action::from_id(choice.tool) else {
             return Intent::Idle;
         };
@@ -353,10 +349,12 @@ impl Body for VillageBody {
                 act: 0,
                 topic: 0,
             }),
-            Action::Give => choice.target.map_or(Intent::Idle, |target| Intent::Interact {
-                target,
-                verb: verb(Action::Give, self.held(entity)),
-            }),
+            Action::Give => choice
+                .target
+                .map_or(Intent::Idle, |target| Intent::Interact {
+                    target,
+                    verb: verb(Action::Give, self.held(entity)),
+                }),
             Action::Move => step_toward(from, self.destination(entity, tick, from), false),
             Action::Follow => choice
                 .target_pos
@@ -602,7 +600,7 @@ impl Director {
     fn should_run_soul(&self, slot: usize, tick: u64) -> bool {
         match self.ring[slot] {
             Ring::Hot => true,
-            Ring::Warm => self.cfg.warm_cadence == 0 || tick % self.cfg.warm_cadence == 0,
+            Ring::Warm => self.cfg.warm_cadence == 0 || tick.is_multiple_of(self.cfg.warm_cadence),
             Ring::Cold => false,
         }
     }
@@ -663,7 +661,6 @@ mod tests {
             }
         }
         director.update(positions, tick);
-
     }
     #[test]
     fn controller_matches_direct_world_pipeline() {

@@ -8,8 +8,8 @@ use serde::Serialize;
 use std::fmt;
 use std::path::Path;
 
-use mw_neural::{Error as NeuralError, ExpertiseLevel, OmniRuntime};
 use mw_agents::soul::TOOL_SLOTS;
+use mw_neural::{Error as NeuralError, ExpertiseLevel, OmniRuntime};
 use mw_village::{Action, TOOL_COUNT};
 
 use crate::soak::{self, SoakConfig, SoakReport};
@@ -48,7 +48,10 @@ pub struct ConfidenceInterval {
 /// interval collapses to the observed value. Empty input is rejected so a
 /// missing seed can never silently pass a gate.
 pub fn confidence_interval(values: &[f64]) -> ConfidenceInterval {
-    assert!(!values.is_empty(), "confidence intervals need at least one seed");
+    assert!(
+        !values.is_empty(),
+        "confidence intervals need at least one seed"
+    );
     let n = values.len();
     let mean = values.iter().sum::<f64>() / n as f64;
     let variance = if n > 1 {
@@ -242,7 +245,7 @@ impl PromotionConfig {
         if self.seeds.is_empty() {
             return Err(PromotionError::InvalidConfig("seed set is empty"));
         }
-        if self.seeds.iter().any(|seed| *seed == 7) {
+        if self.seeds.contains(&7) {
             return Err(PromotionError::InvalidConfig(
                 "pilot seed 7 is not allowed in promotion evaluation",
             ));
@@ -335,16 +338,38 @@ fn aggregate(per_seed: &[SeedMetrics]) -> PromotionAggregate {
     assert!(!per_seed.is_empty());
     // Non-inferiority is preregistered in percentage points, so compare
     // per-seed death rates rather than raw counts.
-    let utility_deaths: Vec<f64> = per_seed.iter().map(|m| 1.0 - m.utility_survival_rate).collect();
-    let candidate_deaths: Vec<f64> = per_seed.iter().map(|m| 1.0 - m.candidate_survival_rate).collect();
+    let utility_deaths: Vec<f64> = per_seed
+        .iter()
+        .map(|m| 1.0 - m.utility_survival_rate)
+        .collect();
+    let candidate_deaths: Vec<f64> = per_seed
+        .iter()
+        .map(|m| 1.0 - m.candidate_survival_rate)
+        .collect();
     let utility_survival: Vec<f64> = per_seed.iter().map(|m| m.utility_survival_rate).collect();
     let candidate_survival: Vec<f64> = per_seed.iter().map(|m| m.candidate_survival_rate).collect();
-    let utility_total: Vec<f64> = per_seed.iter().map(|m| m.utility_total_actions as f64).collect();
-    let candidate_total: Vec<f64> = per_seed.iter().map(|m| m.candidate_total_actions as f64).collect();
-    let utility_resource: Vec<f64> = per_seed.iter().map(|m| m.utility_resource_actions as f64).collect();
-    let candidate_resource: Vec<f64> = per_seed.iter().map(|m| m.candidate_resource_actions as f64).collect();
+    let utility_total: Vec<f64> = per_seed
+        .iter()
+        .map(|m| m.utility_total_actions as f64)
+        .collect();
+    let candidate_total: Vec<f64> = per_seed
+        .iter()
+        .map(|m| m.candidate_total_actions as f64)
+        .collect();
+    let utility_resource: Vec<f64> = per_seed
+        .iter()
+        .map(|m| m.utility_resource_actions as f64)
+        .collect();
+    let candidate_resource: Vec<f64> = per_seed
+        .iter()
+        .map(|m| m.candidate_resource_actions as f64)
+        .collect();
     let needs = |m: &SeedMetrics, candidate: bool, index: usize| {
-        if candidate { m.candidate_mean_needs[index] } else { m.utility_mean_needs[index] }
+        if candidate {
+            m.candidate_mean_needs[index]
+        } else {
+            m.utility_mean_needs[index]
+        }
     };
     let mut action_histogram = [MetricComparison {
         utility: confidence_interval(&[0.0]),
@@ -352,8 +377,14 @@ fn aggregate(per_seed: &[SeedMetrics]) -> PromotionAggregate {
         delta: confidence_interval(&[0.0]),
     }; TOOL_COUNT as usize];
     for action in 0..TOOL_COUNT as usize {
-        let utility: Vec<f64> = per_seed.iter().map(|m| m.utility_histogram[action] as f64).collect();
-        let candidate: Vec<f64> = per_seed.iter().map(|m| m.candidate_histogram[action] as f64).collect();
+        let utility: Vec<f64> = per_seed
+            .iter()
+            .map(|m| m.utility_histogram[action] as f64)
+            .collect();
+        let candidate: Vec<f64> = per_seed
+            .iter()
+            .map(|m| m.candidate_histogram[action] as f64)
+            .collect();
         action_histogram[action] = comparison(&utility, &candidate);
     }
     let hunger_utility: Vec<f64> = per_seed.iter().map(|m| needs(m, false, 0)).collect();
@@ -365,8 +396,7 @@ fn aggregate(per_seed: &[SeedMetrics]) -> PromotionAggregate {
     let balanced_delta: Vec<f64> = per_seed
         .iter()
         .map(|m| {
-            (m.candidate_mean_needs.iter().sum::<f64>()
-                - m.utility_mean_needs.iter().sum::<f64>())
+            (m.candidate_mean_needs.iter().sum::<f64>() - m.utility_mean_needs.iter().sum::<f64>())
                 / 3.0
         })
         .collect();
@@ -394,7 +424,10 @@ fn level_aggregate(rows: &[&ExpertiseLevelMetrics]) -> ExpertiseLevelAggregate {
     let balanced = rows.iter().map(|row| row.balanced).collect();
     let resources = rows.iter().map(|row| row.resource_actions as f64).collect();
     let action_histogram = std::array::from_fn(|action| {
-        ci(rows.iter().map(|row| row.action_histogram[action] as f64).collect())
+        ci(rows
+            .iter()
+            .map(|row| row.action_histogram[action] as f64)
+            .collect())
     });
     ExpertiseLevelAggregate {
         deaths: ci(deaths),
@@ -469,9 +502,14 @@ pub fn decide_expertise(
 }
 
 /// lower confidence bounds, so a boundary value is intentionally accepted.
-pub fn decide(aggregate: &PromotionAggregate, thresholds: PromotionThresholds) -> PromotionDecision {
-    let deaths_non_inferior = aggregate.deaths.delta.upper <= thresholds.death_non_inferiority_margin;
-    let survival_non_inferior = aggregate.survival_rate.delta.lower >= -thresholds.survival_non_inferiority_margin;
+pub fn decide(
+    aggregate: &PromotionAggregate,
+    thresholds: PromotionThresholds,
+) -> PromotionDecision {
+    let deaths_non_inferior =
+        aggregate.deaths.delta.upper <= thresholds.death_non_inferiority_margin;
+    let survival_non_inferior =
+        aggregate.survival_rate.delta.lower >= -thresholds.survival_non_inferiority_margin;
     let dimensions = [
         aggregate.hunger.delta,
         aggregate.energy.delta,
@@ -510,8 +548,7 @@ pub fn run_promotion(
             ticks: config.ticks,
         };
         let utility = soak::run_with_habits(sim_config, false);
-        let (candidate, next_runtime) =
-            soak::run_omni_cached(sim_config, model_path, runtime)?;
+        let (candidate, next_runtime) = soak::run_omni_cached(sim_config, model_path, runtime)?;
         runtime = Some(next_runtime);
         per_seed.push(seed_metrics(seed, utility, candidate));
     }
@@ -548,11 +585,19 @@ pub fn run_expertise_promotion(
     model_path: impl AsRef<Path>,
 ) -> Result<ExpertisePromotionReport, PromotionError> {
     config.validate()?;
-    let levels = [ExpertiseLevel::Novice, ExpertiseLevel::Capable, ExpertiseLevel::Expert];
+    let levels = [
+        ExpertiseLevel::Novice,
+        ExpertiseLevel::Capable,
+        ExpertiseLevel::Expert,
+    ];
     let mut runtimes: [Option<OmniRuntime>; 3] = [None, None, None];
     let mut per_seed = Vec::with_capacity(config.seeds.len());
     for &seed in config.seeds {
-        let sim_config = SoakConfig { seed, agents: config.agents, ticks: config.ticks };
+        let sim_config = SoakConfig {
+            seed,
+            agents: config.agents,
+            ticks: config.ticks,
+        };
         let mut rows: [Option<ExpertiseLevelMetrics>; 3] = [None, None, None];
         for (index, level) in levels.into_iter().enumerate() {
             let (report, runtime) = soak::run_omni_cached_with_expertise(
@@ -600,7 +645,12 @@ mod tests {
         }
     }
 
-    fn aggregate_with_needs(hunger: f64, energy: f64, social: f64, balanced: f64) -> PromotionAggregate {
+    fn aggregate_with_needs(
+        hunger: f64,
+        energy: f64,
+        social: f64,
+        balanced: f64,
+    ) -> PromotionAggregate {
         let zero = metric(0.0);
         PromotionAggregate {
             deaths: zero,

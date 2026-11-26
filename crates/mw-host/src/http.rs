@@ -98,11 +98,7 @@ async fn events(
     let connected = tokio_stream::once(Ok(SseEvent::default().comment("connected")));
     let stream = connected.chain(tokio_stream::iter(replay)).chain(live);
 
-    Sse::new(stream).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(15))
-            .text(""),
-    )
+    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text(""))
 }
 
 fn event_to_sse(event: EventV1) -> SseEvent {

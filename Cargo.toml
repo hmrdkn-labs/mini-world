@@ -18,6 +18,7 @@ members = [
 edition = "2021"
 version = "0.0.0"
 publish = false
+license = "Apache-2.0"
 
 [workspace.dependencies]
 mw-core = { path = "crates/mw-core" }

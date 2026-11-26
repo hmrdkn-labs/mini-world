@@ -3,8 +3,8 @@ use mw_agents::obs::{AgentObs, K_NEIGHBORS};
 use mw_agents::persona::Persona;
 use mw_agents::soul::{DecisionTrace, UtilitySoul};
 use mw_core::{EntityId, Event, Intent, LogEntry, SoulPolicy, World};
-use mw_village::{tile_at, Action, Tile, VillagePack, MAX_NEED};
 use mw_runtime::{start_positions, VillageBody};
+use mw_village::{tile_at, Action, Tile, VillagePack, MAX_NEED};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs::File;
@@ -377,38 +377,76 @@ pub fn replay_provenance_hash(seed: u64, record: &TrajectoryRecord) -> Result<u6
         .collect();
     let mut world = World::with_pack(seed, &pack);
     let ids: Vec<EntityId> = positions.iter().map(|&p| world.spawn(p)).collect();
-    seed_profile(&pack, &ids, seed, profile, record.replay_provenance.fraction);
+    seed_profile(
+        &pack,
+        &ids,
+        seed,
+        profile,
+        record.replay_provenance.fraction,
+    );
     let mut log = Vec::with_capacity(record.replay_provenance.replay_log.len());
     for item in &record.replay_provenance.replay_log {
         let actor = ids
             .get(item.actor_slot as usize)
             .copied()
             .ok_or_else(|| format!("actor slot {} out of range", item.actor_slot))?;
-        let obj = item.intent.as_object().ok_or_else(|| "replay intent is not an object".to_string())?;
-        let kind = obj.get("kind").and_then(serde_json::Value::as_str)
+        let obj = item
+            .intent
+            .as_object()
+            .ok_or_else(|| "replay intent is not an object".to_string())?;
+        let kind = obj
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
             .ok_or_else(|| "replay intent has no kind".to_string())?;
         let intent = match kind {
             "move" => Intent::Move {
-                dx: obj.get("dx").and_then(serde_json::Value::as_i64).unwrap_or(0) as i32,
-                dy: obj.get("dy").and_then(serde_json::Value::as_i64).unwrap_or(0) as i32,
+                dx: obj
+                    .get("dx")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(0) as i32,
+                dy: obj
+                    .get("dy")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(0) as i32,
             },
             "interact" => Intent::Interact {
-                target: EntityId::from_parts(obj.get("target_slot")
+                target: EntityId::from_parts(
+                    obj.get("target_slot")
+                        .and_then(serde_json::Value::as_u64)
+                        .ok_or_else(|| "interact intent has no target".to_string())?
+                        as u32,
+                    0,
+                ),
+                verb: obj
+                    .get("verb")
                     .and_then(serde_json::Value::as_u64)
-                    .ok_or_else(|| "interact intent has no target".to_string())? as u32, 0),
-                verb: obj.get("verb").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32,
+                    .unwrap_or(0) as u32,
             },
             "speak" => Intent::Speak {
-                target: EntityId::from_parts(obj.get("target_slot")
+                target: EntityId::from_parts(
+                    obj.get("target_slot")
+                        .and_then(serde_json::Value::as_u64)
+                        .ok_or_else(|| "speak intent has no target".to_string())?
+                        as u32,
+                    0,
+                ),
+                act: obj
+                    .get("act")
                     .and_then(serde_json::Value::as_u64)
-                    .ok_or_else(|| "speak intent has no target".to_string())? as u32, 0),
-                act: obj.get("act").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32,
-                topic: obj.get("topic").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32,
+                    .unwrap_or(0) as u32,
+                topic: obj
+                    .get("topic")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0) as u32,
             },
             "idle" => Intent::Idle,
             other => return Err(format!("unknown replay intent {other}")),
         };
-        log.push(LogEntry::Intent(mw_core::LoggedIntent { tick: item.tick, actor, intent }));
+        log.push(LogEntry::Intent(mw_core::LoggedIntent {
+            tick: item.tick,
+            actor,
+            intent,
+        }));
     }
     let replayed = World::replay(seed, &positions, record.tick, &log, &pack);
     Ok(replayed.state_hash(&pack))

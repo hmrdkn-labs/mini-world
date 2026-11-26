@@ -81,7 +81,10 @@ impl Host {
         run_id: impl Into<String>,
         event_ring_capacity: usize,
     ) -> Self {
-        assert!(event_ring_capacity > 0, "event ring capacity must be positive");
+        assert!(
+            event_ring_capacity > 0,
+            "event ring capacity must be positive"
+        );
         let run_id = run_id.into();
         let (tx, rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
         let event_ring = Arc::new(Mutex::new(VecDeque::with_capacity(event_ring_capacity)));
@@ -91,7 +94,16 @@ impl Host {
         let actor_events = events.clone();
         thread::Builder::new()
             .name("mw-sim-actor".to_string())
-            .spawn(move || actor_loop(config, run_id, rx, actor_ring, actor_events, event_ring_capacity))
+            .spawn(move || {
+                actor_loop(
+                    config,
+                    run_id,
+                    rx,
+                    actor_ring,
+                    actor_events,
+                    event_ring_capacity,
+                )
+            })
             .expect("simulation actor thread must start");
 
         Self {
@@ -100,7 +112,6 @@ impl Host {
             events,
         }
     }
-
 
     /// Alias for [`Host::new`] that makes actor startup explicit at call sites.
     pub fn spawn(config: RunConfig, run_id: impl Into<String>) -> Self {
@@ -140,9 +151,12 @@ impl Host {
                 reply,
             })
             .map_err(|_| error(ErrorCode::Malformed, "simulation actor is unavailable"))?;
-        response
-            .await
-            .map_err(|_| error(ErrorCode::Malformed, "simulation actor dropped command reply"))?
+        response.await.map_err(|_| {
+            error(
+                ErrorCode::Malformed,
+                "simulation actor dropped command reply",
+            )
+        })?
     }
 
     /// Read the actor-owned immutable projection.
@@ -151,7 +165,9 @@ impl Host {
         self.tx
             .send(Envelope::Snapshot { reply })
             .expect("simulation actor must be running for snapshot");
-        response.await.expect("simulation actor must reply to snapshot")
+        response
+            .await
+            .expect("simulation actor must reply to snapshot")
     }
 
     /// Read authoritative capabilities from the actor's run provenance.
@@ -172,12 +188,13 @@ impl Host {
 
     /// Return retained events strictly newer than `after`, or a gap marker.
     pub fn events_after(&self, after: u64) -> EventsAfter {
-        let ring = self.event_ring.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let ring = self
+            .event_ring
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         match ring.front() {
             None => EventsAfter::Events(Vec::new()),
-            Some((oldest, _)) if after < oldest.saturating_sub(1) => {
-                EventsAfter::SnapshotRequired
-            }
+            Some((oldest, _)) if after < oldest.saturating_sub(1) => EventsAfter::SnapshotRequired,
             Some(_) => EventsAfter::Events(
                 ring.iter()
                     .filter(|(seq, _)| *seq > after)
@@ -272,7 +289,10 @@ fn process_command(
     // Validation is deliberately before idempotency and expected_tick checks.
     accept_version(request.schema_version)?;
     if request.run_id != run_id {
-        return Err(error(ErrorCode::RunConflict, "command run_id does not match the active run"));
+        return Err(error(
+            ErrorCode::RunConflict,
+            "command run_id does not match the active run",
+        ));
     }
     if request.command_id.is_empty() {
         return Err(error(ErrorCode::Malformed, "command_id must not be empty"));
@@ -324,7 +344,9 @@ fn process_command(
         outcome.state_hash,
     );
     {
-        let mut ring = event_ring.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut ring = event_ring
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         ring.push_back((*event_seq, event.clone()));
         if ring.len() > event_ring_capacity {
             ring.pop_front();
@@ -406,7 +428,13 @@ mod tests {
         assert_eq!(event.tick, first.applied_tick);
         assert_eq!(event.state_hash, first.state_hash);
         assert_eq!(host.snapshot().await.tick, 1);
-        assert_eq!(host.events_after(0), EventsAfter::Events(vec![(1, host.events_after(0).events().unwrap()[0].1.clone())]));
+        assert_eq!(
+            host.events_after(0),
+            EventsAfter::Events(vec![(
+                1,
+                host.events_after(0).events().unwrap()[0].1.clone()
+            )])
+        );
 
         assert_eq!(host.submit_command(first_bytes).await.unwrap(), first);
         assert_eq!(host.snapshot().await.tick, 1);
@@ -426,7 +454,7 @@ mod tests {
         fn events(&self) -> Option<&Vec<(u64, EventV1)>> {
             match self {
                 Self::Events(events) => Some(events),
-                Self::SnapshotRequired => None
+                Self::SnapshotRequired => None,
             }
         }
     }

@@ -3,12 +3,12 @@ name = "mw-runtime"
 edition.workspace = true
 version.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 mw-core.workspace = true
 mw-village = { path = "../mw-village" }
 mw-agents = { path = "../mw-agents" }
-mw-text = { path = "../mw-text" }
 mw-neural = { path = "../mw-neural" }
 serde.workspace = true
 serde_json.workspace = true

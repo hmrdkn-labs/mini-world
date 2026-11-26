@@ -15,7 +15,8 @@ fn snapshot_projection_uses_wire_safe_numeric_strings() {
     };
     let mut controller = SimulationController::new(config);
     controller.step_one();
-    let snapshot = SnapshotV1::from_projection("fixture-run", &controller.snapshot_projection(), 17);
+    let snapshot =
+        SnapshotV1::from_projection("fixture-run", &controller.snapshot_projection(), 17);
     let value = serde_json::to_value(&snapshot).expect("snapshot serializes");
 
     assert_eq!(value["schema_version"], json!(WEB_DTO_VERSION));
@@ -30,7 +31,8 @@ fn snapshot_projection_uses_wire_safe_numeric_strings() {
 
     let mut additive = value.clone();
     additive["unknown_future_field"] = json!({"safe": true});
-    let decoded: SnapshotV1 = serde_json::from_value(additive).expect("unknown fields are additive-compatible");
+    let decoded: SnapshotV1 =
+        serde_json::from_value(additive).expect("unknown fields are additive-compatible");
     assert_eq!(decoded, snapshot);
 }
 
@@ -42,11 +44,8 @@ fn capabilities_and_version_negotiation_are_exact() {
         expertise: ExpertiseLevel::Expert,
     };
     let controller = SimulationController::new(config);
-    let capabilities = CapabilitiesV1::for_run(
-        "cap-run",
-        controller.provenance(),
-        ScenarioDto::village(),
-    );
+    let capabilities =
+        CapabilitiesV1::for_run("cap-run", controller.provenance(), ScenarioDto::village());
 
     assert_eq!(capabilities.schema_version, 1);
     assert_eq!(capabilities.dto_versions.capabilities, 1);
@@ -93,5 +92,7 @@ fn snapshot_state_hash_is_canonical_lowercase_hex() {
     let hash = value["state_hash"].as_str().expect("hash is a string");
     assert!(hash.starts_with("0x"));
     assert_eq!(hash.len(), 18);
-    assert!(hash[2..].chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    assert!(hash[2..]
+        .chars()
+        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
 }
